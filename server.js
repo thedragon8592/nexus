@@ -17,25 +17,8 @@ io.on('connection', (socket) => {
   socket.on('chat-message', (payload) => {
     const room = socket.data.room;
     if (!room) return;
-
-    if (payload.recipient) {
-      // Enviar solo al destinatario (y al emisor)
-      const sockets = io.sockets.adapter.rooms.get(room);
-      if (sockets) {
-        for (const socketId of sockets) {
-          const client = io.sockets.sockets.get(socketId);
-          // Suponemos que el nombre del usuario está en el socket (no lo tenemos)
-          // En su lugar, enviamos a todos y el cliente filtra (no es privado real)
-          // pero al menos lo recibe el destinatario. Para hacerlo privado de verdad,
-          // necesitaríamos guardar el nombre de cada socket.
-          // Como solución temporal, enviaremos a todos, pero el cliente solo lo muestra si coincide.
-        }
-      }
-      // Mejor: emitir a todos (client-side filtering)
-      io.to(room).emit('chat-message', payload);
-    } else {
-      io.to(room).emit('chat-message', payload);
-    }
+    // Enviar a todos (el cliente filtra privados)
+    io.to(room).emit('chat-message', payload);
   });
 
   socket.on('disconnect', () => {
