@@ -4,12 +4,9 @@ const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: '*' }
-});
+const io = new Server(server, { cors: { origin: '*' } });
 
-// Almacén de salas: gameId -> Map(socketId -> username)
-const rooms = new Map();
+const rooms = new Map(); // gameId -> Map(socketId, username)
 
 io.on('connection', (socket) => {
   let currentGame = null;
@@ -18,14 +15,14 @@ io.on('connection', (socket) => {
   socket.on('join', ({ gameId, username }) => {
     if (!gameId || !username) return;
 
-    // Comprobar nombre duplicado en la sala
+    // Comprobar nombre duplicado (insensible a mayúsculas)
     const room = rooms.get(gameId) || new Map();
-    if (Array.from(room.values()).includes(username)) {
+    const lowerNames = Array.from(room.values()).map(n => n.toLowerCase());
+    if (lowerNames.includes(username.toLowerCase())) {
       socket.emit('system-message', '❌ That name is already taken in this game.');
       return;
     }
 
-    // Salir de sala anterior
     if (currentGame) {
       socket.leave(currentGame);
       const oldRoom = rooms.get(currentGame);
@@ -43,13 +40,9 @@ io.on('connection', (socket) => {
     rooms.get(gameId).set(socket.id, username);
 
     socket.to(gameId).emit('system-message', `${username} joined the chat.`);
-
-    // Enviar lista de usuarios a todos (para /online)
-    const userList = Array.from(rooms.get(gameId).values());
-    io.to(gameId).emit('user-list', userList);
+    io.to(gameId).emit('user-list', Array.from(rooms.get(gameId).values()));
   });
 
-  // Mensaje normal o privado
   socket.on('chat-message', (payload) => {
     const room = currentGame;
     if (!room) return;
@@ -58,18 +51,17 @@ io.on('connection', (socket) => {
     if (payload.recipient) {
       const userMap = rooms.get(room);
       if (!userMap) return;
-      // Buscar el socket del destinatario por nombre
+      // Búsqueda insensible a mayúsculas
       let targetSocketId = null;
       for (const [id, name] of userMap.entries()) {
-        if (name === payload.recipient) {
+        if (name.toLowerCase() === payload.recipient.toLowerCase()) {
           targetSocketId = id;
           break;
         }
       }
       if (targetSocketId) {
-        // Enviar al destinatario y al emisor
         io.to(targetSocketId).emit('chat-message', payload);
-        socket.emit('chat-message', payload); // para que el emisor lo vea
+        socket.emit('chat-message', payload);
       } else {
         socket.emit('system-message', `❌ User '${payload.recipient}' not found.`);
       }
@@ -80,7 +72,6 @@ io.on('connection', (socket) => {
     io.to(room).emit('chat-message', payload);
   });
 
-  // Comando /online
   socket.on('request-online', () => {
     const room = currentGame;
     if (!room) return;
@@ -90,24 +81,13 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Reacciones
   socket.on('add-reaction', ({ messageId, emoji }) => {
     const room = currentGame;
     if (!room) return;
-    socket.to(room).emit('reaction-update', {
-      messageId,
-      emoji,
-      from: currentUsername
-    });
-    // También se lo enviamos al propio emisor para que su contador se actualice
-    socket.emit('reaction-update', {
-      messageId,
-      emoji,
-      from: currentUsername
-    });
+    socket.to(room).emit('reaction-update', { messageId, emoji, from: currentUsername });
+    socket.emit('reaction-update', { messageId, emoji, from: currentUsername });
   });
 
-  // Desconexión
   socket.on('disconnect', () => {
     if (currentGame) {
       const userMap = rooms.get(currentGame);
