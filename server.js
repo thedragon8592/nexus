@@ -22,19 +22,17 @@ function getUserList(gameId) {
   return Array.from(room.values()).map(entry => entry.username);
 }
 
-// Servir client.js
 app.get('/client.js', (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET');
     res.sendFile(__dirname + '/public/client.js');
 });
 
-// Servir version.js
-app.get('/version.js', (req, res) => {
+app.get('/version.json', (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET');
-    res.setHeader('Content-Type', 'application/javascript');
-    res.sendFile(__dirname + '/public/version.js');
+    res.setHeader('Content-Type', 'application/json');
+    res.sendFile(__dirname + '/public/version.json');
 });
 
 io.on('connection', (socket) => {
