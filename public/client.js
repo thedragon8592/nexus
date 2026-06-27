@@ -918,7 +918,6 @@
 
     function startChat() { createChatUI(); }
 
-    // INICIALIZACIÓN ROBUSTA
     function safeInit() {
         try {
             if (document.body) {
@@ -932,7 +931,6 @@
                     if (!username) createOnboardingOverlay();
                     else startChat();
                 });
-                // Fallback por si el evento ya pasó
                 setTimeout(() => {
                     if (document.body && !document.getElementById('nx-chat')) {
                         console.log('[NexusChat] Fallback start');
