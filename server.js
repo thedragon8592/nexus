@@ -22,21 +22,11 @@ function getUserList(gameId) {
   return Array.from(room.values()).map(entry => entry.username);
 }
 
-// Servir client.js con CORS y protección por dominio
+// Servir client.js con CORS abierto (sin restricción de origen)
 app.get('/client.js', (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET');
     res.sendFile(__dirname + '/public/client.js');
-});
-    // Cabeceras CORS
-    res.setHeader('Access-Control-Allow-Origin', isAllowed ? origin : '');
-    res.setHeader('Access-Control-Allow-Methods', 'GET');
-
-    if (isAllowed) {
-        res.sendFile(__dirname + '/public/client.js');
-    } else {
-        res.status(403).send('Forbidden');
-    }
 });
 
 io.on('connection', (socket) => {
