@@ -22,8 +22,24 @@ function getUserList(gameId) {
   return Array.from(room.values()).map(entry => entry.username);
 }
 
+// Servir client.js con CORS y protección por dominio
 app.get('/client.js', (req, res) => {
-    res.sendFile(__dirname + '/public/client.js');
+    const origin = req.get('Origin') || '';
+    const referer = req.get('Referer') || '';
+    const allowedDomains = ['resurviv.biz', 'survev.io', 'surviv.io'];
+    const isAllowed = allowedDomains.some(domain =>
+        origin.includes(domain) || referer.includes(domain)
+    );
+
+    // Cabeceras CORS
+    res.setHeader('Access-Control-Allow-Origin', isAllowed ? origin : '');
+    res.setHeader('Access-Control-Allow-Methods', 'GET');
+
+    if (isAllowed) {
+        res.sendFile(__dirname + '/public/client.js');
+    } else {
+        res.status(403).send('Forbidden');
+    }
 });
 
 io.on('connection', (socket) => {
