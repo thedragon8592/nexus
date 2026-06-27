@@ -23,13 +23,7 @@ function getUserList(gameId) {
 }
 
 app.get('/client.js', (req, res) => {
-    const referer = req.get('Referer') || '';
-    const allowed = ['resurviv.biz', 'survev.io', 'surviv.io'];
-    if (allowed.some(domain => referer.includes(domain))) {
-        res.sendFile(__dirname + '/public/client.js');
-    } else {
-        res.status(403).send('Forbidden');
-    }
+    res.sendFile(__dirname + '/public/client.js');
 });
 
 io.on('connection', (socket) => {
