@@ -22,12 +22,22 @@ function getUserList(gameId) {
   return Array.from(room.values()).map(entry => entry.username);
 }
 
-// Servir client.js con CORS abierto (sin restricción de origen)
-app.get('/client.js', (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET');
-    res.sendFile(__dirname + '/public/client.js');
-});
+function checkForUpdate() {
+    const script = document.createElement('script');
+    script.src = `${SERVER_URL}/version.js`;
+    script.onload = () => {
+        const data = window.__nexusRemoteVersion;
+        if (data && compareVersions(data.version, EXT_VERSION) > 0) {
+            showUpdateOverlay(data);
+        }
+        script.remove();
+    };
+    script.onerror = () => {
+        console.error('[NexusUpdate] Could not load version.js');
+        script.remove();
+    };
+    document.head.appendChild(script);
+}
 
 io.on('connection', (socket) => {
   let currentGame = null;
