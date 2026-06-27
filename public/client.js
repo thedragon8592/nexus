@@ -919,14 +919,29 @@
     function startChat() { createChatUI(); }
 
     function safeInit() {
-        if (document.body) {
-            if (!username) createOnboardingOverlay();
-            else startChat();
-        } else {
-            document.addEventListener('DOMContentLoaded', () => {
+        try {
+            if (document.body) {
+                console.log('[NexusChat] Body ready, starting chat');
                 if (!username) createOnboardingOverlay();
                 else startChat();
-            });
+            } else {
+                console.log('[NexusChat] Waiting for DOMContentLoaded');
+                document.addEventListener('DOMContentLoaded', () => {
+                    console.log('[NexusChat] DOMContentLoaded fired');
+                    if (!username) createOnboardingOverlay();
+                    else startChat();
+                });
+                // Fallback por si el evento ya pasó
+                setTimeout(() => {
+                    if (document.body && !document.getElementById('nx-chat')) {
+                        console.log('[NexusChat] Fallback start');
+                        if (!username) createOnboardingOverlay();
+                        else startChat();
+                    }
+                }, 1000);
+            }
+        } catch(e) {
+            console.error('[NexusChat] Error starting chat:', e);
         }
     }
     safeInit();
