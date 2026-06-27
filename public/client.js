@@ -918,6 +918,7 @@
 
     function startChat() { createChatUI(); }
 
+    // INICIALIZACIÓN ROBUSTA
     function safeInit() {
         try {
             if (document.body) {
