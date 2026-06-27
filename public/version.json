@@ -1,0 +1,16 @@
+{
+  "version": "1.0",
+  "changes": [
+    "Initial release of Nexus Chat",
+    "Real-time messaging with WebSocket",
+    "Private messages and mentions",
+    "Emoji reactions and polls",
+    "Block/unblock users",
+    "Customizable UI"
+  ],
+  "bugs": [
+    "Fixed message duplication",
+    "Fixed block/unblock toggle",
+    "Fixed private message delivery"
+  ]
+}
