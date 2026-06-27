@@ -913,10 +913,21 @@
         animateParticles();
     }
 
-    function escapeHtml(str) { const div = document.createElement('div'); div.textContent = str; return div.innerHTML; }
+        function escapeHtml(str) { const div = document.createElement('div'); div.textContent = str; return div.innerHTML; }
     function escapeRegex(str) { return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
     function startChat() { createChatUI(); }
-    if (!username) createOnboardingOverlay();
-    else startChat();
+
+    function safeInit() {
+        if (document.body) {
+            if (!username) createOnboardingOverlay();
+            else startChat();
+        } else {
+            document.addEventListener('DOMContentLoaded', () => {
+                if (!username) createOnboardingOverlay();
+                else startChat();
+            });
+        }
+    }
+    safeInit();
 })();
