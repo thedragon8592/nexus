@@ -1,5 +1,5 @@
 window.__nexusRemoteVersion = {
-  version: '1.1',
+  version: '1.2',
   changes: [
     'Prueba de notificación',
     'Interfaz mejorada'
