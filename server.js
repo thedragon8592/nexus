@@ -4,18 +4,6 @@ const { Server } = require('socket.io');
 const crypto = require('crypto');
 
 const app = express();
-app.use(express.static('public'));
-
-app.get('/client.js', (req, res, next) => {
-    const referer = req.get('Referer') || '';
-    const allowed = ['resurviv.biz', 'survev.io', 'surviv.io'];
-    if (allowed.some(domain => referer.includes(domain))) {
-        next();
-    } else {
-        res.status(403).send('Forbidden');
-    }
-});
-
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
@@ -33,6 +21,16 @@ function getUserList(gameId) {
   if (!room) return [];
   return Array.from(room.values()).map(entry => entry.username);
 }
+
+app.get('/client.js', (req, res) => {
+    const referer = req.get('Referer') || '';
+    const allowed = ['resurviv.biz', 'survev.io', 'surviv.io'];
+    if (allowed.some(domain => referer.includes(domain))) {
+        res.sendFile(__dirname + '/public/client.js');
+    } else {
+        res.status(403).send('Forbidden');
+    }
+});
 
 io.on('connection', (socket) => {
   let currentGame = null;
