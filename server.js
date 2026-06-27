@@ -7,10 +7,10 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
-const rooms = new Map();           // gameId -> Map(socketId, { username, color })
-const roomHistory = new Map();     // gameId -> Array of last 50 messages
-const roomPolls = new Map();       // gameId -> Map(pollId, pollData)
-const roomPinned = new Map();      // gameId -> pinnedMessage (string)
+const rooms = new Map();
+const roomHistory = new Map();
+const roomPolls = new Map();
+const roomPinned = new Map();
 
 function normalizeName(name) {
   return name.trim().toLowerCase();
@@ -63,7 +63,6 @@ io.on('connection', (socket) => {
     if (!roomPolls.has(gameId)) roomPolls.set(gameId, new Map());
     if (!roomPinned.has(gameId)) roomPinned.set(gameId, null);
 
-    // Enviar historial y mensaje fijado al nuevo usuario
     socket.emit('chat-history', roomHistory.get(gameId));
     if (roomPinned.get(gameId)) {
       socket.emit('pinned-message', roomPinned.get(gameId));
@@ -107,16 +106,13 @@ io.on('connection', (socket) => {
       : Date.now() + '-' + Math.random().toString(36).substring(2, 9);
     payload.messageId = messageId;
 
-    // Guardar en historial
     const history = roomHistory.get(currentGame) || [];
     history.push({ ...payload, timestamp: payload.timestamp || Date.now() });
     if (history.length > 50) history.shift();
     roomHistory.set(currentGame, history);
 
-    // Confirmar entrega al remitente
     socket.emit('message-delivered', { messageId });
 
-    // Mensaje privado
     if (payload.recipient) {
       const userMap = rooms.get(currentGame);
       if (!userMap) return;
@@ -143,7 +139,6 @@ io.on('connection', (socket) => {
     io.to(currentGame).emit('chat-message', payload);
   });
 
-  // Fijar mensaje
   socket.on('pin-message', (text) => {
     if (!currentGame) return;
     roomPinned.set(currentGame, text);
@@ -169,7 +164,6 @@ io.on('connection', (socket) => {
     io.to(currentGame).emit('reaction-update', { messageId, emoji });
   });
 
-  // Encuestas
   socket.on('create-poll', ({ question, options }) => {
     if (!currentGame) return;
     const polls = roomPolls.get(currentGame) || new Map();
