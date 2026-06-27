@@ -24,13 +24,10 @@ function getUserList(gameId) {
 
 // Servir client.js con CORS y protección por dominio
 app.get('/client.js', (req, res) => {
-    const origin = req.get('Origin') || '';
-    const referer = req.get('Referer') || '';
-    const allowedDomains = ['resurviv.biz', 'survev.io', 'surviv.io'];
-    const isAllowed = allowedDomains.some(domain =>
-        origin.includes(domain) || referer.includes(domain)
-    );
-
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET');
+    res.sendFile(__dirname + '/public/client.js');
+});
     // Cabeceras CORS
     res.setHeader('Access-Control-Allow-Origin', isAllowed ? origin : '');
     res.setHeader('Access-Control-Allow-Methods', 'GET');
