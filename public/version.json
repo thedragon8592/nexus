@@ -1,10 +1,10 @@
 {
-  "version": "1.1",
+  "version": "2.1",
   "changes": [
-    "Prueba de notificación",
-    "Interfaz mejorada"
+    "Emoji reactions",
+    "Improved anti‑spam"
   ],
   "bugs": [
-    "Bug arreglado de prueba"
+    "All bugs fixed"
   ]
 }
