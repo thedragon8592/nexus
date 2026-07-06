@@ -110,12 +110,9 @@ io.on('connection', (socket) => {
     io.to(currentGame).emit('user-list', getUserList(currentGame));
   });
 
-  // ✅ MODIFICACIÓN: reenviar kills en los mensajes
   socket.on('chat-message', (payload) => {
     if (!currentGame) return;
     payload.author = currentUsername;
-
-    // Aseguramos que kills esté presente (0 si no se envió)
     payload.kills = payload.kills || 0;
 
     const messageId = crypto.randomUUID
@@ -153,7 +150,6 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Emitir a todos (incluye el campo kills)
     io.to(currentGame).emit('chat-message', payload);
   });
 
