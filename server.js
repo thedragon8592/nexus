@@ -110,9 +110,13 @@ io.on('connection', (socket) => {
     io.to(currentGame).emit('user-list', getUserList(currentGame));
   });
 
+  // ✅ MODIFICACIÓN: reenviar kills en los mensajes
   socket.on('chat-message', (payload) => {
     if (!currentGame) return;
     payload.author = currentUsername;
+
+    // Aseguramos que kills esté presente (0 si no se envió)
+    payload.kills = payload.kills || 0;
 
     const messageId = crypto.randomUUID
       ? crypto.randomUUID()
@@ -149,6 +153,7 @@ io.on('connection', (socket) => {
       return;
     }
 
+    // Emitir a todos (incluye el campo kills)
     io.to(currentGame).emit('chat-message', payload);
   });
 
@@ -225,7 +230,7 @@ io.on('connection', (socket) => {
   });
 });
 
-app.get('/', (req, res) => res.send('Nexus Chat Server v11 is running'));
+app.get('/', (req, res) => res.send('Nexus Chat Server v12 - with kills support'));
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
