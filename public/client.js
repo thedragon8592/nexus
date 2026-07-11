@@ -4,10 +4,10 @@
     window.__nexusChatLoaded = true;
 
     const EXT_VERSION = '2.6';
-    const DOWNLOAD_URL = 'https://tusitio.com/nexus-chat';
+    const DOWNLOAD_URL = 'https://wnexuschat.netlify.app';
     const SERVER_URL    = 'https://nexus-chat-p7ph.onrender.com';
     const LOGO_URL      = 'https://i.ibb.co/FkXVWJnC/Chat-GPT-Image-26-jun-2026-19-06-21.png';
-    const DISCORD_INVITE = 'https://discord.gg/comingsoon';
+    const DISCORD_INVITE = 'https://discord.gg/rDJhfCTDqR';
     const FIRE_GIF_URL  = 'https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExd2lyZTFqbGttcWh0d3cwenUwc2R2NzB6aGF4YWw4dzQ0b2FpMXZjbyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/q4voi8znbYANE5GtYI/giphy.gif';
 
     function hslToHex(hsl) {
