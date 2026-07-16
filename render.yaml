@@ -5,13 +5,10 @@ services:
     plan: free
     region: oregon
     branch: main
-    autoDeploy: true
+    autoDeployTrigger: commit
     buildCommand: corepack enable && pnpm install --frozen-lockfile
     startCommand: pnpm start
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
-
-previews:
-  generation: none
