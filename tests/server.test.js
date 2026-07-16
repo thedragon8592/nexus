@@ -158,6 +158,8 @@ test('social accounts support global chat, friend requests and direct messages',
   const aliceJoin = await join(alice, 'social-game', 'Alice');
   const bobJoin = await join(bob, 'social-game', 'Bob');
 
+  assert.equal(aliceJoin.socialSession.protocolVersion, 2);
+  assert.equal(aliceJoin.socialSession.serverVersion, '3.2.0');
   assert.match(aliceJoin.socialSession.profile.friendCode, /^NX-[0-9A-F]{8}$/);
   assert.ok(aliceJoin.socialSession.token);
 
@@ -188,4 +190,34 @@ test('social accounts support global chat, friend requests and direct messages',
   const directHistory = nextEvent(alice, 'direct-history');
   alice.emit('direct-history', bobJoin.socialSession.profile.id);
   assert.equal((await directHistory)[0].messages[0].text, 'secret hello');
+});
+
+test('versioned public assets are served without stale caching', async (t) => {
+  const nexus = createNexusServer({ dataFile: null });
+  const port = await nexus.start(0);
+  const url = `http://127.0.0.1:${port}`;
+  t.after(() => nexus.stop());
+
+  const health = await fetch(`${url}/health`).then((response) => response.json());
+  assert.equal(health.version, '3.2.0');
+
+  for (const path of ['/client.js', '/nexus-chat.user.js', '/nexus-optimizer.user.js']) {
+    const response = await fetch(`${url}${path}`);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('cache-control'), /no-store/);
+    assert.match(response.headers.get('content-type'), /javascript/);
+  }
+
+  const client = await fetch(`${url}/client.js`).then((response) => response.text());
+  assert.match(client, /const EXT_VERSION = '3\.2\.0'/);
+  assert.match(client, /data-settings-page="diagnostics"/);
+  assert.match(client, /theme-ocean/);
+  assert.match(client, /theme-ember/);
+  assert.match(client, /theme-orchid/);
+  assert.match(client, /\^NX-\[0-9A-F\]\{6,8\}\$/);
+
+  const userscript = await fetch(`${url}/nexus-chat.user.js`).then((response) => response.text());
+  assert.match(userscript, /@version\s+3\.2\.0/);
+  assert.match(userscript, /nx-bootstrap-loader/);
+  assert.doesNotMatch(userscript, /overlay\.id = 'nx-game-loader'/);
 });

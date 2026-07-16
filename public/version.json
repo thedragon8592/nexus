@@ -1,14 +1,14 @@
 {
-  "version": "3.1.0",
+  "version": "3.2.0",
   "changes": [
-    "Stable Nexus ID with a portable recovery key",
-    "Self-contained Tampermonkey loader for reliable global chat",
-    "Game loading screen and redesigned settings",
-    "Safe performance presets based on real game settings"
+    "New tabbed settings center with live diagnostics",
+    "Six distinct color-theory themes",
+    "No-cache delivery for client and userscripts",
+    "Versioned social protocol for Nexus ID and global chat"
   ],
   "bugs": [
-    "Nexus identity remains stable even when server storage restarts",
-    "The same identity is shared between Resurviv and Survev",
-    "Removed guessed FPS, ping and WebSocket optimizer patches"
+    "Fixed bootstrap loader collision",
+    "Added local server override for full integration testing",
+    "Improved clipboard fallback and connection error visibility"
   ]
 }

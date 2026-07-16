@@ -135,10 +135,15 @@ function createNexusServer(options = {}) {
   }
 
   app.use(setApiCors);
-  app.get('/client.js', (req, res) => res.sendFile(path.join(__dirname, '../../public/client.js')));
-  app.get('/nexus-chat.user.js', (req, res) => res.sendFile(path.join(__dirname, '../../public/nexus-chat.user.js')));
-  app.get('/nexus-optimizer.user.js', (req, res) => res.sendFile(path.join(__dirname, '../../public/nexus-optimizer.user.js')));
-  app.get('/version.json', (req, res) => res.sendFile(path.join(__dirname, '../../public/version.json')));
+  function sendPublicFile(res, fileName, contentType) {
+    res.setHeader('Cache-Control', 'no-store, max-age=0');
+    if (contentType) res.type(contentType);
+    res.sendFile(path.join(__dirname, '../../public', fileName));
+  }
+  app.get('/client.js', (req, res) => sendPublicFile(res, 'client.js', 'application/javascript'));
+  app.get('/nexus-chat.user.js', (req, res) => sendPublicFile(res, 'nexus-chat.user.js', 'application/javascript'));
+  app.get('/nexus-optimizer.user.js', (req, res) => sendPublicFile(res, 'nexus-optimizer.user.js', 'application/javascript'));
+  app.get('/version.json', (req, res) => sendPublicFile(res, 'version.json', 'application/json'));
   app.get('/health', (req, res) => {
     res.json({
       status: 'ok',
@@ -246,6 +251,8 @@ function createNexusServer(options = {}) {
       socket.emit('join-accepted', { gameId, username });
       socket.emit('social-session', {
         token: issuedToken,
+        protocolVersion: 2,
+        serverVersion: packageJson.version,
         ...socialStore.snapshot(currentAccountId, getOnlineAccountIds()),
       });
       refreshFriendPresence(currentAccountId);
