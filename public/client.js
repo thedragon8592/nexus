@@ -3,7 +3,7 @@
     if (window.__nexusChatLoaded) return;
     window.__nexusChatLoaded = true;
 
-    const EXT_VERSION = '2.6';
+    const EXT_VERSION = '2.6.0';
     const DOWNLOAD_URL = 'https://wnexuschat.netlify.app';
     const SERVER_URL    = 'https://nexus-chat-p7ph.onrender.com';
     const LOGO_URL      = 'https://i.ibb.co/FkXVWJnC/Chat-GPT-Image-26-jun-2026-19-06-21.png';
@@ -25,6 +25,20 @@
     }
     function escapeHtml(str) { const div = document.createElement('div'); div.textContent = str; return div.innerHTML; }
     function escapeRegex(str) { return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+    function readStoredJson(key, fallback) {
+        try {
+            const value = JSON.parse(localStorage.getItem(key) || 'null');
+            return value === null ? fallback : value;
+        } catch (error) {
+            console.warn(`[NexusChat] Ignoring invalid local setting: ${key}`);
+            return fallback;
+        }
+    }
+    function sanitizeColor(value) {
+        return typeof value === 'string' && /^(#[0-9a-f]{6}|hsl\(\s*(?:\d|[1-9]\d|[12]\d\d|3[0-5]\d|360)\s*,\s*(?:\d|[1-9]\d|100)%\s*,\s*(?:\d|[1-9]\d|100)%\s*\))$/i.test(value.trim())
+            ? value.trim()
+            : '#5dade2';
+    }
 
     const DEFAULT_CONFIG = {
         bgColor: '#1a1a1a',
@@ -41,7 +55,7 @@
         glassmorphism: true,
         volume: 0.5
     };
-    let config = Object.assign({}, DEFAULT_CONFIG, JSON.parse(localStorage.getItem('nexusChatConfig') || '{}'));
+    let config = Object.assign({}, DEFAULT_CONFIG, readStoredJson('nexusChatConfig', {}));
 
     let username     = sessionStorage.getItem('nexus_username') || '';
     function getUserColor(name) {
@@ -54,7 +68,8 @@
     let authorColor = getUserColor(username);
     localStorage.setItem('nexus_authorColor', authorColor);
 
-    let blockedUsers        = JSON.parse(localStorage.getItem('nexus_blocked') || '[]');
+    let blockedUsers        = readStoredJson('nexus_blocked', []);
+    if (!Array.isArray(blockedUsers)) blockedUsers = [];
     let recentLongMessages  = [];
     let mutedUntil          = 0;
 
@@ -135,13 +150,11 @@
         } catch(e) {}
     }
 
-    // Interceptar el WebSocket del juego para obtener el gameId
-    const OrigWS = window.WebSocket;
-    window.WebSocket = function(url, protocols) {
-        const m = url.match(/play\?gameId=([a-f0-9-]+)/i);
-        if (m && m[1] !== gameId) {
+    function acceptGameId(newGameId) {
+        if (typeof newGameId !== 'string' || !/^[a-zA-Z0-9._:-]{1,96}$/.test(newGameId)) return;
+        if (newGameId !== gameId) {
             if (gameId && totalMessagesThisGame > 0) addSystemMessage(`Game ended. Messages: ${totalMessagesThisGame}, mentions: ${totalMentionsThisGame}`);
-            gameId = m[1];
+            gameId = newGameId;
             messageHistory = [];
             if (messageArea) messageArea.innerHTML = '';
             mentionCount = 0; unreadCount = 0;
@@ -151,16 +164,40 @@
             connectToChat();
             startDiscordReminder();
         }
-        return new OrigWS(url, protocols);
-    };
+    }
 
-    setTimeout(() => {
-        if (!gameId) {
-            const combined = (window.location.hash + window.location.search);
-            const m = combined.match(/gameId=([a-f0-9-]+)/i);
-            if (m) { gameId = m[1]; connectToChat(); startDiscordReminder(); }
+    function setupGameIdDetection() {
+        const isExtension = typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.getURL === 'function';
+        if (isExtension) {
+            const script = document.createElement('script');
+            script.src = chrome.runtime.getURL('interceptor.js');
+            script.onload = function() { this.remove(); };
+            (document.head || document.documentElement).appendChild(script);
+            window.addEventListener('message', (event) => {
+                if (event.source !== window || !event.data || event.data.type !== 'NEXUS_GAMEID') return;
+                acceptGameId(event.data.gameId);
+            });
+        } else {
+            const OriginalWebSocket = window.WebSocket;
+            window.WebSocket = new Proxy(OriginalWebSocket, {
+                construct(Target, args) {
+                    const match = String(args[0] || '').match(/play\?gameId=([a-zA-Z0-9._:-]+)/i);
+                    if (match) acceptGameId(match[1]);
+                    return Reflect.construct(Target, args);
+                }
+            });
         }
-    }, 2000);
+
+        setTimeout(() => {
+            if (!gameId) {
+                const combined = window.location.hash + window.location.search;
+                const match = combined.match(/gameId=([a-zA-Z0-9._:-]+)/i);
+                if (match) acceptGameId(match[1]);
+            }
+        }, 2000);
+    }
+
+    setupGameIdDetection();
 
     function connectToChat() {
         if (!gameId || !username) return;
@@ -206,7 +243,10 @@
                 if (!text) return;
                 const pinDiv = document.createElement('div');
                 pinDiv.className = 'pinned-msg';
-                pinDiv.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 17l-6 6v-12l-6-6h24l-6 6v12l-6-6z"/></svg> ${text}`;
+                pinDiv.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 17l-6 6v-12l-6-6h24l-6 6v12l-6-6z"/></svg>`;
+                const pinText = document.createElement('span');
+                pinText.textContent = text;
+                pinDiv.appendChild(pinText);
                 if (killLeaderElement && killLeaderElement.nextSibling) {
                     messageArea.insertBefore(pinDiv, killLeaderElement.nextSibling);
                 } else {
@@ -249,19 +289,18 @@
                 if (isInputFocused) onInputChange();
             });
             chatSocket.on('online-list', (users) => addSystemMessage(`👥 Online: ${users.join(', ')}`));
-            chatSocket.on('reaction-update', ({ messageId, emoji }) => {
+            chatSocket.on('reaction-update', ({ messageId, emoji, count }) => {
                 const msgDiv = messageArea?.querySelector(`.user-msg[data-msgid="${CSS.escape(messageId)}"]`);
                 if (msgDiv) {
                     const reactionsSpan = msgDiv.querySelector('.reactions');
                     const existing = reactionsSpan.querySelector(`.reaction[data-emoji="${emoji}"]`);
                     if (existing) {
-                        const count = (parseInt(existing.textContent.match(/\d+/)?.[0] || 0) || 0) + 1;
-                        existing.textContent = `${emoji} ${count}`;
+                        existing.textContent = `${emoji} ${Number.isInteger(count) ? count : 1}`;
                     } else {
                         const span = document.createElement('span');
                         span.className = 'reaction';
                         span.setAttribute('data-emoji', emoji);
-                        span.textContent = `${emoji} 1`;
+                        span.textContent = `${emoji} ${Number.isInteger(count) ? count : 1}`;
                         reactionsSpan.appendChild(span);
                     }
                 }
@@ -318,7 +357,7 @@
                 <img src="${FIRE_GIF_URL}" class="fire-gif fire-gif-left" alt="🔥">
                 <span class="kill-leader-text">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="gold" stroke="none"><path d="M5 16l-3-4 14-14 4 14-15 4z"/></svg>
-                    Kill Leader: <strong>${name}</strong> (${kills})
+                    Kill Leader: <strong>${escapeHtml(name)}</strong> (${escapeHtml(kills)})
                 </span>
                 <img src="${FIRE_GIF_URL}" class="fire-gif fire-gif-right" alt="🔥">
             `;
@@ -331,7 +370,7 @@
             const textSpan = killLeaderElement.querySelector('.kill-leader-text');
             if (textSpan) textSpan.innerHTML = `
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="gold" stroke="none"><path d="M5 16l-3-4 14-14 4 14-15 4z"/></svg>
-                Kill Leader: <strong>${name}</strong> (${kills})
+                Kill Leader: <strong>${escapeHtml(name)}</strong> (${escapeHtml(kills)})
             `;
         }
     }
@@ -391,7 +430,8 @@
         if (!typingDiv) return;
         const names = Array.from(typingUsers.keys()).filter(name => name !== username);
         if (names.length > 0) {
-            typingDiv.innerHTML = `<span class="typing-dots">${names.slice(0,2).join(', ')} ${names.length > 2 ? 'and others' : ''} is typing<span class="dots-anim"><span>.</span><span>.</span><span>.</span></span></span>`;
+            const safeNames = names.slice(0, 2).map(escapeHtml).join(', ');
+            typingDiv.innerHTML = `<span class="typing-dots">${safeNames} ${names.length > 2 ? 'and others' : ''} is typing<span class="dots-anim"><span>.</span><span>.</span><span>.</span></span></span>`;
         } else {
             typingDiv.innerHTML = '';
         }
@@ -568,19 +608,21 @@
         const style = document.createElement('style');
         style.textContent = `
             :root, .theme-dark {
-                --nx-bg: rgba(18, 18, 24, 0.92);
-                --nx-header-bg: rgba(10, 10, 14, 0.95);
-                --nx-text: #f0f0f0;
-                --nx-text-secondary: #b0b0b0;
-                --nx-own-msg-bg: #2a2a3a;
-                --nx-other-msg-bg: #1e1e2a;
-                --nx-own-border: #4caf50;
-                --nx-other-border: #ff4444;
-                --nx-input-bg: #2a2a3a;
-                --nx-input-border: #444;
+                --nx-bg: linear-gradient(160deg, rgba(8, 13, 29, 0.96), rgba(14, 8, 30, 0.94));
+                --nx-header-bg: linear-gradient(110deg, rgba(17, 26, 52, 0.98), rgba(30, 14, 55, 0.96));
+                --nx-text: #f7f8ff;
+                --nx-text-secondary: #9ba8c7;
+                --nx-own-msg-bg: linear-gradient(135deg, rgba(35, 214, 255, 0.16), rgba(116, 76, 255, 0.14));
+                --nx-other-msg-bg: rgba(255, 255, 255, 0.055);
+                --nx-own-border: #3ee7ff;
+                --nx-other-border: #a878ff;
+                --nx-input-bg: rgba(7, 12, 27, 0.82);
+                --nx-input-border: rgba(111, 225, 255, 0.22);
                 --nx-discord: #7289da;
-                --nx-glass-border: rgba(255,255,255,0.08);
-                --nx-shadow: 0 8px 32px rgba(0,0,0,0.5);
+                --nx-glass-border: rgba(137, 208, 255, 0.16);
+                --nx-accent: #3ee7ff;
+                --nx-accent-2: #a878ff;
+                --nx-shadow: 0 24px 70px rgba(0,0,0,0.58), 0 0 0 1px rgba(99,216,255,0.05), inset 0 1px 0 rgba(255,255,255,0.05);
             }
             .theme-light {
                 --nx-bg: rgba(240, 240, 245, 0.95);
@@ -619,12 +661,12 @@
                 background: var(--nx-bg);
                 color: var(--nx-text);
                 font-family: 'Segoe UI', 'Inter', system-ui, sans-serif;
-                font-size: 13px; border-radius: 16px;
+                font-size: 13px; border-radius: 20px;
                 display: flex; flex-direction: column; z-index: 99990;
                 box-shadow: var(--nx-shadow);
                 border: 1px solid var(--nx-glass-border);
-                backdrop-filter: blur(14px);
-                -webkit-backdrop-filter: blur(14px);
+                backdrop-filter: blur(22px) saturate(145%);
+                -webkit-backdrop-filter: blur(22px) saturate(145%);
                 transition: opacity 0.3s ease, transform 0.3s ease, background 0.3s, color 0.3s;
                 overflow: hidden;
                 transform: scale(1);
@@ -636,18 +678,19 @@
             #nx-chat.minimized #nx-messages, #nx-chat.minimized #nx-input-box, #nx-chat.minimized #nx-typing, #nx-chat.minimized #nx-scroll-bottom { display: none; }
             #nx-header {
                 background: var(--nx-header-bg);
-                padding: 6px 10px; display: flex; align-items: center; gap: 8px;
+                padding: 10px 12px; display: flex; align-items: center; gap: 8px;
                 border-bottom: 1px solid var(--nx-glass-border); flex-shrink: 0;
             }
-            .nx-logo  { font-weight: 600; font-size: 14px; color: #ccc; margin-right: auto; display: flex; align-items: center; gap: 6px; }
-            .nx-logo svg { color: #ff4444; }
+            .nx-logo  { font-weight: 750; font-size: 14px; letter-spacing: .02em; color: #f7fbff; margin-right: auto; display: flex; align-items: center; gap: 7px; }
+            .nx-logo svg { color: var(--nx-accent); filter: drop-shadow(0 0 8px rgba(62,231,255,.65)); }
             .nx-madeby { font-size: 14px; cursor: default; }
             .nx-header-actions { display: flex; gap: 4px; align-items: center; }
             .nx-header-actions button {
                 background: none; border: none; color: #888; font-size: 14px; cursor: pointer;
                 padding: 2px 4px; line-height: 1; transition: color 0.2s; display: flex; align-items: center;
             }
-            .nx-header-actions button:hover { color: #fff; }
+            .nx-header-actions button { border-radius: 7px; }
+            .nx-header-actions button:hover { color: #fff; background: rgba(255,255,255,.08); }
             #nx-mention-badge, #nx-unread-badge {
                 background: #ff4444; color: white; border-radius: 10px;
                 font-size: 10px; padding: 2px 6px; font-weight: bold;
@@ -656,7 +699,7 @@
             #nx-dnd-btn.active { color: #ff4444; }
             #nx-dim-btn.active { color: #f39c12; }
             #nx-messages {
-                flex: 1; overflow-y: auto; padding: 8px; position: relative;
+                flex: 1; overflow-y: auto; padding: 12px 10px; position: relative;
                 scrollbar-width: thin; scrollbar-color: #444 transparent;
                 word-break: break-word; overflow-wrap: anywhere;
             }
@@ -680,17 +723,17 @@
             .dots-anim span:nth-child(2) { animation-delay: 0.2s; }
             .dots-anim span:nth-child(3) { animation-delay: 0.4s; }
             @keyframes dotPulse { 0%,20% { opacity: 0; } 50% { opacity: 1; } 100% { opacity: 0; } }
-            .system-msg   { color: #777; font-style: italic; font-size: 11px; margin-bottom: 4px; }
+            .system-msg   { color: var(--nx-text-secondary); font-style: normal; font-size: 10.5px; letter-spacing: .015em; margin: 5px 3px; }
             .discord-reminder { background: rgba(114,137,218,0.15); border-radius: 4px; padding: 4px 8px; margin-bottom: 6px; }
             .discord-link { color: var(--nx-discord); cursor: pointer; text-decoration: underline; }
-            .user-msg     { margin-bottom: 6px; line-height: 1.4; position: relative; padding: 6px 10px; border-radius: 8px; animation: slideUp 0.3s ease-out; }
+            .user-msg     { margin-bottom: 8px; line-height: 1.45; position: relative; padding: 8px 10px; border-radius: 12px; animation: slideUp 0.3s ease-out; box-shadow: inset 0 1px 0 rgba(255,255,255,.035); }
             @keyframes slideUp { 0% { opacity: 0; transform: translateY(10px); } 100% { opacity: 1; transform: translateY(0); } }
-            .own-msg      { text-align: right; background: var(--nx-own-msg-bg); border-right: 2px solid var(--nx-own-border); margin-left: 20px; }
-            .other-msg    { text-align: left; background: var(--nx-other-msg-bg); border-left: 2px solid var(--nx-other-border); margin-right: 20px; }
+            .own-msg      { text-align: right; background: var(--nx-own-msg-bg); border-right: 2px solid var(--nx-own-border); margin-left: 26px; }
+            .other-msg    { text-align: left; background: var(--nx-other-msg-bg); border-left: 2px solid var(--nx-other-border); margin-right: 26px; }
             .user-msg strong { font-weight: 600; cursor: pointer; }
             .user-msg strong:hover { text-decoration: underline; }
-            .mention      { color: #00ff88; font-weight: bold; }
-            .private-msg  { color: #ffaa00; font-style: italic; }
+            .mention      { color: #5effc8; font-weight: 750; text-shadow: 0 0 12px rgba(94,255,200,.35); }
+            .private-msg  { color: #ffc86b; font-style: normal; }
             .error-msg    { color: #ff6666; font-size: 12px; margin: 4px 0; }
             .you-label    { font-size: 10px; opacity: 0.5; margin-left: 4px; }
             .blocked-hidden { display: none !important; }
@@ -703,11 +746,11 @@
             .reaction-btn:hover, .block-btn:hover { background: #333; color: #fff; }
             .reactions { display: inline; }
             .reaction { display: inline-block; margin-left: 3px; font-size: 12px; background: rgba(255,255,255,0.1); padding: 1px 4px; border-radius: 4px; }
-            .poll-container { background: rgba(255,255,255,0.05); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
+            .poll-container { background: rgba(255,255,255,0.05); border: 1px solid var(--nx-glass-border); border-radius: 14px; padding: 10px; margin-bottom: 8px; }
             .poll-question { font-weight: bold; margin-bottom: 6px; display: flex; align-items: center; gap: 4px; }
-            .poll-option { display: block; width: 100%; text-align: left; background: rgba(255,255,255,0.08); border: 1px solid #444; color: #e0e0e0; padding: 4px 8px; margin-bottom: 3px; border-radius: 4px; cursor: pointer; }
+            .poll-option { display: block; width: 100%; text-align: left; background: rgba(255,255,255,0.065); border: 1px solid var(--nx-glass-border); color: var(--nx-text); padding: 7px 9px; margin-bottom: 5px; border-radius: 8px; cursor: pointer; }
             .poll-option:hover { background: rgba(255,255,255,0.15); }
-            .pinned-msg { background: rgba(255,255,255,0.03); padding: 6px; margin-bottom: 6px; border-bottom: 1px solid #333; font-style: italic; border-radius: 4px; display: flex; align-items: center; gap: 6px; }
+            .pinned-msg { background: linear-gradient(90deg, rgba(62,231,255,.09), rgba(168,120,255,.08)); padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--nx-glass-border); font-style: normal; border-radius: 10px; display: flex; align-items: center; gap: 7px; }
             .kill-leader {
                 position: relative;
                 background-image: url('${FIRE_GIF_URL}');
@@ -757,20 +800,21 @@
                 color: #ffaa00;
             }
             .time-separator { text-align: center; font-size: 10px; color: #777; margin: 8px 0; }
-            #nx-input-box { display: flex; padding: 6px; background: rgba(0,0,0,0.3); border-top: 1px solid var(--nx-glass-border); gap: 6px; }
-            #nx-input { flex: 1; background: var(--nx-input-bg); border: 1px solid var(--nx-input-border); color: var(--nx-text); padding: 6px 8px; outline: none; font-size: 13px; border-radius: 8px; transition: background 0.3s; }
-            #nx-send { background: #b71c1c; border: none; color: white; font-weight: 600; padding: 6px 14px; cursor: pointer; font-size: 13px; border-radius: 8px; transition: background 0.2s; display: flex; align-items: center; }
-            #nx-send:hover    { background: #8b0000; }
+            #nx-input-box { display: flex; padding: 9px; background: rgba(2,5,14,0.46); border-top: 1px solid var(--nx-glass-border); gap: 7px; }
+            #nx-input { flex: 1; min-width: 0; background: var(--nx-input-bg); border: 1px solid var(--nx-input-border); color: var(--nx-text); padding: 9px 10px; outline: none; font-size: 13px; border-radius: 11px; transition: border-color .2s, box-shadow .2s, background .2s; }
+            #nx-input:focus { border-color: rgba(62,231,255,.62); box-shadow: 0 0 0 3px rgba(62,231,255,.08); }
+            #nx-send { background: linear-gradient(135deg, #23cbe9, #795cff); border: none; color: white; font-weight: 700; padding: 8px 13px; cursor: pointer; font-size: 13px; border-radius: 11px; transition: transform .2s, box-shadow .2s; display: flex; align-items: center; }
+            #nx-send:hover    { transform: translateY(-1px); box-shadow: 0 8px 20px rgba(76,126,255,.32); }
             #nx-send:disabled { opacity: 0.5; cursor: not-allowed; }
             #nx-toggle {
                 position: fixed; bottom: 20px; left: 20px;
                 width: 38px; height: 38px;
-                background: var(--nx-bg); border: 1px solid var(--nx-glass-border);
-                border-radius: 10px;
+                background: linear-gradient(145deg, rgba(13,24,50,.96), rgba(27,12,50,.94)); border: 1px solid var(--nx-glass-border);
+                border-radius: 13px; color: var(--nx-accent);
                 display: flex; align-items: center; justify-content: center;
                 font-size: 20px; cursor: pointer; z-index: 99989;
                 backdrop-filter: blur(10px);
-                box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+                box-shadow: 0 12px 32px rgba(0,0,0,.46), 0 0 20px rgba(62,231,255,.09);
                 transition: background 0.2s;
             }
             #nx-toggle:hover { background: rgba(255,255,255,0.1); }
@@ -1032,7 +1076,7 @@
         }
         lastMessageTime = now;
         const own = (author === username);
-        const effectiveColor = msgAuthorColor || authorColor;
+        const effectiveColor = sanitizeColor(msgAuthorColor || authorColor);
         const div = document.createElement('div');
         div.className = 'user-msg ' + (own ? 'own-msg' : 'other-msg') + (isPrivate ? ' private-msg' : '');
         div.setAttribute('data-msgid', msgId); div.setAttribute('data-author', author); div.classList.add('blocked-real');
@@ -1143,7 +1187,7 @@
             <label>Auto-hide (s)</label><input type="number" id="cfg-idle" value="${config.idleTimeout}" min="1" max="30">
             <label>Discord reminders</label><input type="checkbox" id="cfg-discord-reminder" ${config.discordReminder?'checked':''}>
             <label>Do Not Disturb</label><input type="checkbox" id="cfg-dnd" ${config.dndMode?'checked':''}>
-            <a href="${DISCORD_INVITE}" target="_blank" style="display:block;margin-top:10px;color:#7289da;text-decoration:none;">Join our Discord</a>
+            <a href="${DISCORD_INVITE}" target="_blank" rel="noopener noreferrer" style="display:block;margin-top:10px;color:#7289da;text-decoration:none;">Join our Discord</a>
             <small>Made by ! System with ❤️</small>
         `;
 
@@ -1176,12 +1220,18 @@
     }
 
     function applyTheme(theme) { chatContainer.classList.remove('theme-dark', 'theme-light', 'theme-midnight'); chatContainer.classList.add('theme-' + theme); }
-    function applySize() { const sizes = { pequeño: {w:260,h:280}, mediano: {w:340,h:340}, grande: {w:420,h:400} }; chatContainer.style.width = sizes[config.size].w+'px'; chatContainer.style.height = sizes[config.size].h+'px'; }
+    function applySize() { const sizes = { pequeño: {w:300,h:340}, mediano: {w:360,h:400}, grande: {w:440,h:470} }; const size = sizes[config.size] || sizes.pequeño; chatContainer.style.width = size.w+'px'; chatContainer.style.height = size.h+'px'; }
     function applyPosition() {
         const posMap = { 'top-left':{top:'20px',left:'20px',bottom:'auto',right:'auto'}, 'top-right':{top:'20px',right:'20px',bottom:'auto',left:'auto'}, 'bottom-left':{bottom:'20px',left:'20px',top:'auto',right:'auto'}, 'bottom-right':{bottom:'20px',right:'20px',top:'auto',left:'auto'} };
         Object.assign(chatContainer.style, posMap[config.position]); Object.assign(toggleIcon.style, posMap[config.position]);
     }
-    function applyConfig() { chatContainer.style.background = config.bgColor; chatContainer.style.color = config.textColor; applySize(); applyPosition(); }
+    function applyConfig() {
+        if (config.bgColor && config.bgColor !== DEFAULT_CONFIG.bgColor) chatContainer.style.background = config.bgColor;
+        else chatContainer.style.removeProperty('background');
+        chatContainer.style.color = config.textColor;
+        applySize();
+        applyPosition();
+    }
     function saveConfig() { localStorage.setItem('nexusChatConfig', JSON.stringify(config)); }
 
     function startDiscordReminder() {
@@ -1220,7 +1270,7 @@
                     <button id="nx-name-submit">Join</button>
                 </div>
                 <p class="nx-madeby">Made by ! System with ❤️</p>
-                <a href="${DISCORD_INVITE}" target="_blank" class="nx-discord-btn">Join Discord</a>
+                <a href="${DISCORD_INVITE}" target="_blank" rel="noopener noreferrer" class="nx-discord-btn">Join Discord</a>
             </div>
         `;
         const style = document.createElement('style');
@@ -1304,12 +1354,12 @@
                 </button>
                 <img src="${LOGO_URL}" alt="Nexus Chat" class="nx-logo-img">
                 <h1 class="nx-title-neon">¡Actualización disponible!</h1>
-                <p class="nx-version">Versión ${data.version}</p>
+                <p class="nx-version">Versión ${escapeHtml(String(data.version || ''))}</p>
                 <div class="nx-changelog">
                     <h3>✨ Novedades:</h3>
-                    <ul>${(data.changes || []).map(c => `<li>${c}</li>`).join('')}</ul>
+                    <ul>${(data.changes || []).map(c => `<li>${escapeHtml(String(c))}</li>`).join('')}</ul>
                     <h3>🐛 Bugs solucionados:</h3>
-                    <ul>${(data.bugs || []).map(b => `<li>${b}</li>`).join('')}</ul>
+                    <ul>${(data.bugs || []).map(b => `<li>${escapeHtml(String(b))}</li>`).join('')}</ul>
                 </div>
                 <button id="nx-update-download">⬇ Descargar actualización</button>
             </div>

@@ -1,10 +1,14 @@
 {
-  "version": "1.0",
+  "version": "2.6.0",
   "changes": [
-    "Emoji reactions",
-    "Improved anti‑spam"
+    "Secure private messages",
+    "Validated real-time protocol",
+    "New Nexus glass interface",
+    "Live server status"
   ],
   "bugs": [
-    "All bugs fixed"
+    "Private messages no longer enter public history",
+    "Unsafe pinned and typing content is escaped",
+    "Empty rooms are fully cleaned from memory"
   ]
 }

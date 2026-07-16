@@ -1,12 +1,23 @@
 {
   "name": "nexus-chat-server",
-  "version": "1.0",
+  "version": "2.6.0",
+  "private": true,
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": ">=20"
+  },
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "check": "node --check server.js && node --check public/client.js && node --check ../NexusChatExtension/nexus-chat.js && node --check \"../NexusChat Web/script.js\" && node --check \"../NexusChat Web/landing-v2.js\"",
+    "build:extension": "node scripts/build-extension.js",
+    "test": "node --test tests/*.test.js"
   },
   "dependencies": {
     "express": "^4.18.2",
     "socket.io": "^4.7.2"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.7.2"
   }
 }
