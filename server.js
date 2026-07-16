@@ -1,6 +1,6 @@
 const { createNexusServer } = require('./src/server/create-server');
 
-const nexus = createNexusServer();
+const nexus = createNexusServer({ host: process.env.HOST || '0.0.0.0' });
 
 nexus.start(process.env.PORT || 3000).then((port) => {
   console.log(`Nexus Chat ${nexus.version} running on port ${port}`);
