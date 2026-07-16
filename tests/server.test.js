@@ -30,13 +30,14 @@ async function createConnectedClient(url) {
 async function join(socket, gameId, username) {
   const accepted = nextEvent(socket, 'join-accepted');
   const history = nextEvent(socket, 'chat-history');
+  const social = nextEvent(socket, 'social-session');
   socket.emit('join', { gameId, username });
-  const [[joinData], [messages]] = await Promise.all([accepted, history]);
-  return { joinData, messages };
+  const [[joinData], [messages], [socialSession]] = await Promise.all([accepted, history, social]);
+  return { joinData, messages, socialSession };
 }
 
 test('public chat uses server identity and enters public history', async (t) => {
-  const nexus = createNexusServer();
+  const nexus = createNexusServer({ dataFile: null });
   const port = await nexus.start(0);
   const url = `http://127.0.0.1:${port}`;
   const clients = [];
@@ -66,7 +67,7 @@ test('public chat uses server identity and enters public history', async (t) => 
 });
 
 test('private messages are delivered only to participants and never enter public history', async (t) => {
-  const nexus = createNexusServer();
+  const nexus = createNexusServer({ dataFile: null });
   const port = await nexus.start(0);
   const url = `http://127.0.0.1:${port}`;
   const clients = [];
@@ -95,7 +96,7 @@ test('private messages are delivered only to participants and never enter public
 });
 
 test('duplicate names and malformed events are rejected without stopping the server', async (t) => {
-  const nexus = createNexusServer();
+  const nexus = createNexusServer({ dataFile: null });
   const port = await nexus.start(0);
   const url = `http://127.0.0.1:${port}`;
   const clients = [];
@@ -123,7 +124,7 @@ test('duplicate names and malformed events are rejected without stopping the ser
 });
 
 test('ephemeral room data is removed after the final disconnect', async (t) => {
-  const nexus = createNexusServer();
+  const nexus = createNexusServer({ dataFile: null });
   const port = await nexus.start(0);
   const url = `http://127.0.0.1:${port}`;
   t.after(() => nexus.stop());
@@ -139,4 +140,52 @@ test('ephemeral room data is removed after the final disconnect', async (t) => {
   assert.equal(nexus.state.roomPolls.size, 0);
   assert.equal(nexus.state.roomPinned.size, 0);
   assert.equal(nexus.state.roomReactions.size, 0);
+});
+
+test('social accounts support global chat, friend requests and direct messages', async (t) => {
+  const nexus = createNexusServer({ dataFile: null });
+  const port = await nexus.start(0);
+  const url = `http://127.0.0.1:${port}`;
+  const clients = [];
+  t.after(async () => {
+    clients.forEach((socket) => socket.disconnect());
+    await nexus.stop();
+  });
+
+  const alice = await createConnectedClient(url);
+  const bob = await createConnectedClient(url);
+  clients.push(alice, bob);
+  const aliceJoin = await join(alice, 'social-game', 'Alice');
+  const bobJoin = await join(bob, 'social-game', 'Bob');
+
+  assert.match(aliceJoin.socialSession.profile.friendCode, /^NX-[0-9A-F]{6}$/);
+  assert.ok(aliceJoin.socialSession.token);
+
+  const requestReceived = nextEvent(bob, 'friend-request-received');
+  const requestSent = nextEvent(alice, 'friend-request-sent');
+  const bobUpdate = nextEvent(bob, 'social-update');
+  alice.emit('friend-request', bobJoin.socialSession.profile.friendCode);
+  await Promise.all([requestReceived, requestSent]);
+  const [pending] = await bobUpdate;
+  assert.equal(pending.requests.length, 1);
+
+  const aliceFriends = nextEvent(alice, 'social-update');
+  const bobFriends = nextEvent(bob, 'social-update');
+  bob.emit('friend-response', { requestId: pending.requests[0].id, accept: true });
+  const [[aliceSocial], [bobSocial]] = await Promise.all([aliceFriends, bobFriends]);
+  assert.equal(aliceSocial.friends[0].username, 'Bob');
+  assert.equal(bobSocial.friends[0].username, 'Alice');
+
+  const globalIncoming = nextEvent(bob, 'global-message');
+  alice.emit('global-message', 'hello world');
+  assert.equal((await globalIncoming)[0].text, 'hello world');
+
+  const directIncoming = nextEvent(bob, 'direct-message');
+  alice.emit('direct-message', { friendId: bobJoin.socialSession.profile.id, text: 'secret hello' });
+  const direct = (await directIncoming)[0];
+  assert.equal(direct.author, 'Alice');
+
+  const directHistory = nextEvent(alice, 'direct-history');
+  alice.emit('direct-history', bobJoin.socialSession.profile.id);
+  assert.equal((await directHistory)[0].messages[0].text, 'secret hello');
 });

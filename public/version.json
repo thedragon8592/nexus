@@ -1,14 +1,14 @@
 {
-  "version": "2.6.0",
+  "version": "3.0.0",
   "changes": [
-    "Secure private messages",
-    "Validated real-time protocol",
-    "New Nexus glass interface",
-    "Live server status"
+    "Persistent global chat",
+    "Friends and direct messages",
+    "Large Discord-style floating interface",
+    "Compact chat-only mode"
   ],
   "bugs": [
-    "Private messages no longer enter public history",
-    "Unsafe pinned and typing content is escaped",
-    "Empty rooms are fully cleaned from memory"
+    "Access tokens are stored as secure hashes on the server",
+    "Social histories are capped and written atomically",
+    "Match, global and direct conversations stay separated"
   ]
 }

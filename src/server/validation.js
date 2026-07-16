@@ -9,6 +9,7 @@ const LIMITS = Object.freeze({
   activePolls: 10,
   history: 50,
   messageId: 80,
+  friendCode: 12,
 });
 
 const ALLOWED_REACTIONS = new Set(['👍', '😂', '😮', '❤️', '🔥']);
@@ -43,6 +44,15 @@ function readGameId(value) {
 
 function readUsername(value) {
   return readText(value, { name: 'Username', max: LIMITS.username });
+}
+
+function readFriendCode(value) {
+  const result = readText(value, { name: 'Friend code', max: LIMITS.friendCode });
+  if (!result.ok) return result;
+  if (!/^NX-[0-9A-F]{6}$/i.test(result.value)) {
+    return { ok: false, error: 'Friend code must look like NX-12AB34.' };
+  }
+  return { ok: true, value: result.value.toUpperCase() };
 }
 
 function readColor(value) {
@@ -111,6 +121,7 @@ module.exports = {
   normalizeName,
   readChatPayload,
   readColor,
+  readFriendCode,
   readGameId,
   readPoll,
   readText,

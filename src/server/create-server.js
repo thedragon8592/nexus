@@ -4,11 +4,13 @@ const http = require('http');
 const path = require('path');
 const { Server } = require('socket.io');
 const packageJson = require('../../package.json');
+const { SocialStore } = require('./social-store');
 const {
   ALLOWED_REACTIONS,
   LIMITS,
   normalizeName,
   readChatPayload,
+  readFriendCode,
   readGameId,
   readPoll,
   readText,
@@ -79,6 +81,36 @@ function createNexusServer(options = {}) {
   const roomPolls = new Map();
   const roomPinned = new Map();
   const roomReactions = new Map();
+  const onlineAccounts = new Map();
+  const hasDataFileOption = Object.prototype.hasOwnProperty.call(options, 'dataFile');
+  const dataFile = hasDataFileOption
+    ? options.dataFile
+    : (process.env.DATA_FILE || path.join(__dirname, '../../data/nexus-social.json'));
+  const socialStore = options.socialStore || new SocialStore(dataFile);
+
+  function getOnlineAccountIds() {
+    return new Set(Array.from(onlineAccounts.entries()).filter(([, sockets]) => sockets.size > 0).map(([id]) => id));
+  }
+
+  function emitToAccount(accountId, event, payload) {
+    const sockets = onlineAccounts.get(accountId);
+    if (!sockets) return;
+    for (const socketId of sockets) io.to(socketId).emit(event, payload);
+  }
+
+  function emitSocialUpdate(accountId) {
+    const snapshot = socialStore.snapshot(accountId, getOnlineAccountIds());
+    if (!snapshot) return;
+    const { globalHistory, ...social } = snapshot;
+    emitToAccount(accountId, 'social-update', social);
+  }
+
+  function refreshFriendPresence(accountId) {
+    const user = socialStore.data.users[accountId];
+    if (!user) return;
+    emitSocialUpdate(accountId);
+    for (const friendId of user.friendIds) emitSocialUpdate(friendId);
+  }
 
   function getUserList(gameId) {
     const room = rooms.get(gameId);
@@ -119,6 +151,7 @@ function createNexusServer(options = {}) {
   io.on('connection', (socket) => {
     let currentGame = null;
     let currentUsername = null;
+    let currentAccountId = null;
     const limiter = createRateLimiter();
 
     function protocolError(code, message) {
@@ -164,7 +197,7 @@ function createNexusServer(options = {}) {
       currentUsername = null;
     }
 
-    socket.on('join', (payload) => {
+    socket.on('join', async (payload) => {
       if (!allow('join', 5, 10_000)) return;
       if (!payload || typeof payload !== 'object') {
         protocolError('INVALID_JOIN', 'Join data is invalid.');
@@ -198,7 +231,27 @@ function createNexusServer(options = {}) {
       if (!roomPinned.has(gameId)) roomPinned.set(gameId, null);
       if (!roomReactions.has(gameId)) roomReactions.set(gameId, new Map());
 
+      let issuedToken = null;
+      if (!currentAccountId) {
+        let socialUser = socialStore.findByToken(payload.socialToken);
+        if (!socialUser) {
+          const registration = await socialStore.register(username);
+          socialUser = registration.user;
+          issuedToken = registration.token;
+        } else {
+          await socialStore.updateUsername(socialUser.id, username);
+        }
+        currentAccountId = socialUser.id;
+        if (!onlineAccounts.has(currentAccountId)) onlineAccounts.set(currentAccountId, new Set());
+        onlineAccounts.get(currentAccountId).add(socket.id);
+      }
+
       socket.emit('join-accepted', { gameId, username });
+      socket.emit('social-session', {
+        token: issuedToken,
+        ...socialStore.snapshot(currentAccountId, getOnlineAccountIds()),
+      });
+      refreshFriendPresence(currentAccountId);
       socket.emit('chat-history', roomHistory.get(gameId));
       const pinned = roomPinned.get(gameId);
       if (pinned) socket.emit('pinned-message', pinned);
@@ -206,7 +259,7 @@ function createNexusServer(options = {}) {
       io.to(gameId).emit('user-list', getUserList(gameId));
     });
 
-    socket.on('change-username', (value) => {
+    socket.on('change-username', async (value) => {
       if (!requireJoined() || !allow('change-username', 3, 30_000)) return;
       const parsedName = readUsername(value);
       if (!parsedName.ok) {
@@ -226,11 +279,13 @@ function createNexusServer(options = {}) {
       }
       const oldName = currentUsername;
       currentUsername = newUsername;
+      if (currentAccountId) await socialStore.updateUsername(currentAccountId, newUsername);
       room.set(socket.id, { username: newUsername });
       socket.emit('username-change-accepted', { newUsername });
       socket.emit('system-message', `✅ Your name is now ${newUsername}.`);
       socket.to(currentGame).emit('system-message', `${oldName} changed their name to ${newUsername}.`);
       io.to(currentGame).emit('user-list', getUserList(currentGame));
+      if (currentAccountId) refreshFriendPresence(currentAccountId);
     });
 
     socket.on('chat-message', (rawPayload) => {
@@ -268,6 +323,80 @@ function createNexusServer(options = {}) {
       roomHistory.set(currentGame, history);
       io.to(currentGame).emit('chat-message', message);
       socket.emit('message-delivered', { messageId: message.messageId, private: false });
+    });
+
+    socket.on('global-message', async (value) => {
+      if (!currentAccountId || !allow('global-message', 5, 10_000)) return;
+      const parsed = readText(value, { name: 'Global message', max: LIMITS.message });
+      if (!parsed.ok) {
+        protocolError('INVALID_GLOBAL_MESSAGE', parsed.error);
+        return;
+      }
+      const message = await socialStore.addGlobalMessage(currentAccountId, parsed.value);
+      if (message) io.emit('global-message', message);
+    });
+
+    socket.on('friend-request', async (value) => {
+      if (!currentAccountId || !allow('friend-request', 3, 30_000)) return;
+      const parsed = readFriendCode(value);
+      if (!parsed.ok) {
+        protocolError('INVALID_FRIEND_CODE', parsed.error);
+        return;
+      }
+      const result = await socialStore.requestFriend(currentAccountId, parsed.value);
+      if (!result.ok) {
+        protocolError(result.code, result.error);
+        return;
+      }
+      socket.emit('friend-request-sent', { to: result.to });
+      emitToAccount(result.request.toId, 'friend-request-received', { from: result.from });
+      emitSocialUpdate(result.request.toId);
+      emitSocialUpdate(result.request.fromId);
+    });
+
+    socket.on('friend-response', async (payload) => {
+      if (!currentAccountId || !allow('friend-response', 6, 30_000)) return;
+      if (!payload || typeof payload.requestId !== 'string' || typeof payload.accept !== 'boolean') {
+        protocolError('INVALID_FRIEND_RESPONSE', 'Friend response is invalid.');
+        return;
+      }
+      const result = await socialStore.respondToFriendRequest(currentAccountId, payload.requestId, payload.accept);
+      if (!result.ok) {
+        protocolError(result.code, result.error);
+        return;
+      }
+      emitSocialUpdate(result.request.fromId);
+      emitSocialUpdate(result.request.toId);
+    });
+
+    socket.on('direct-history', (friendId) => {
+      if (!currentAccountId || typeof friendId !== 'string') return;
+      const history = socialStore.directHistory(currentAccountId, friendId);
+      if (!history) {
+        protocolError('NOT_FRIENDS', 'Direct messages are available between friends.');
+        return;
+      }
+      socket.emit('direct-history', { friendId, messages: history });
+    });
+
+    socket.on('direct-message', async (payload) => {
+      if (!currentAccountId || !allow('direct-message', 5, 10_000)) return;
+      if (!payload || typeof payload.friendId !== 'string') {
+        protocolError('INVALID_DIRECT_MESSAGE', 'Direct message is invalid.');
+        return;
+      }
+      const parsed = readText(payload.text, { name: 'Direct message', max: LIMITS.message });
+      if (!parsed.ok) {
+        protocolError('INVALID_DIRECT_MESSAGE', parsed.error);
+        return;
+      }
+      const message = await socialStore.addDirectMessage(currentAccountId, payload.friendId, parsed.value);
+      if (!message) {
+        protocolError('NOT_FRIENDS', 'Direct messages are available between friends.');
+        return;
+      }
+      socket.emit('direct-message', message);
+      emitToAccount(payload.friendId, 'direct-message', message);
     });
 
     socket.on('pin-message', (value) => {
@@ -371,6 +500,14 @@ function createNexusServer(options = {}) {
 
     socket.on('disconnect', () => {
       leaveCurrentRoom();
+      if (currentAccountId) {
+        const sockets = onlineAccounts.get(currentAccountId);
+        if (sockets) {
+          sockets.delete(socket.id);
+          if (sockets.size === 0) onlineAccounts.delete(currentAccountId);
+        }
+        refreshFriendPresence(currentAccountId);
+      }
       limiter.clear();
     });
   });
@@ -379,7 +516,7 @@ function createNexusServer(options = {}) {
     app,
     io,
     server,
-    state: { rooms, roomHistory, roomPolls, roomPinned, roomReactions },
+    state: { rooms, roomHistory, roomPolls, roomPinned, roomReactions, onlineAccounts, socialStore },
     version: packageJson.version,
     start(port = 0) {
       return new Promise((resolve, reject) => {
