@@ -73,7 +73,7 @@ function createNexusServer(options = {}) {
       methods: ['GET', 'POST'],
     },
     maxHttpBufferSize: 16 * 1024,
-    serveClient: false,
+    serveClient: true,
   });
 
   const rooms = new Map();
@@ -136,6 +136,8 @@ function createNexusServer(options = {}) {
 
   app.use(setApiCors);
   app.get('/client.js', (req, res) => res.sendFile(path.join(__dirname, '../../public/client.js')));
+  app.get('/nexus-chat.user.js', (req, res) => res.sendFile(path.join(__dirname, '../../public/nexus-chat.user.js')));
+  app.get('/nexus-optimizer.user.js', (req, res) => res.sendFile(path.join(__dirname, '../../public/nexus-optimizer.user.js')));
   app.get('/version.json', (req, res) => res.sendFile(path.join(__dirname, '../../public/version.json')));
   app.get('/health', (req, res) => {
     res.json({
@@ -233,14 +235,9 @@ function createNexusServer(options = {}) {
 
       let issuedToken = null;
       if (!currentAccountId) {
-        let socialUser = socialStore.findByToken(payload.socialToken);
-        if (!socialUser) {
-          const registration = await socialStore.register(username);
-          socialUser = registration.user;
-          issuedToken = registration.token;
-        } else {
-          await socialStore.updateUsername(socialUser.id, username);
-        }
+        const identity = await socialStore.ensureIdentity(payload.socialToken, username);
+        const socialUser = identity.user;
+        issuedToken = identity.token;
         currentAccountId = socialUser.id;
         if (!onlineAccounts.has(currentAccountId)) onlineAccounts.set(currentAccountId, new Set());
         onlineAccounts.get(currentAccountId).add(socket.id);

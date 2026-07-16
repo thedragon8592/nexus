@@ -3,12 +3,81 @@
     if (window.__nexusChatLoaded) return;
     window.__nexusChatLoaded = true;
 
-    const EXT_VERSION = '3.0.0';
+    const EXT_VERSION = '3.1.0';
     const DOWNLOAD_URL = 'https://wnexuschat.netlify.app';
     const SERVER_URL    = 'https://nexus-chat-p7ph.onrender.com';
     const LOGO_URL      = 'https://i.ibb.co/FkXVWJnC/Chat-GPT-Image-26-jun-2026-19-06-21.png';
     const DISCORD_INVITE = 'https://discord.gg/rDJhfCTDqR';
     const FIRE_GIF_URL  = 'https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExd2lyZTFqbGttcWh0d3cwenUwc2R2NzB6aGF4YWw4dzQ0b2FpMXZjbyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/q4voi8znbYANE5GtYI/giphy.gif';
+
+    function createSocialToken() {
+        const bytes = new Uint8Array(32);
+        crypto.getRandomValues(bytes);
+        let binary = '';
+        bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+        return `NXR-${btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')}`;
+    }
+
+    function isSocialToken(value) {
+        return typeof value === 'string' && /^(?:NXR-)?[A-Za-z0-9_-]{40,160}$/.test(value);
+    }
+
+    function persistSocialToken(value) {
+        if (!isSocialToken(value)) return false;
+        localStorage.setItem('nexus_social_token', value);
+        window.dispatchEvent(new CustomEvent('NEXUS_SOCIAL_TOKEN', { detail: { token: value } }));
+        return true;
+    }
+
+    function createGameLoadingScreen() {
+        const existing = document.getElementById('nx-game-loader');
+        const overlay = existing || document.createElement('div');
+        overlay.id = 'nx-game-loader';
+        overlay.innerHTML = '<div class="nx-loader-core"><span class="nx-loader-mark">N</span><p>Preparing the battlefield</p><div class="nx-loader-track"><i></i></div><small>Loading essential assets…</small></div>';
+        if (!existing) document.documentElement.appendChild(overlay);
+        if (!document.getElementById('nx-game-loader-style')) {
+            const style = document.createElement('style');
+            style.id = 'nx-game-loader-style';
+            style.textContent = `
+                #nx-game-loader { position:fixed; inset:0; z-index:2147483646; display:grid; place-items:center; background:#0d100b; color:#f4eedb; font-family:Inter,Segoe UI,system-ui,sans-serif; transition:opacity .45s ease,visibility .45s ease; }
+                #nx-game-loader.nx-loader-done { opacity:0; visibility:hidden; pointer-events:none; }
+                .nx-loader-core { width:min(330px,calc(100vw - 48px)); text-align:center; }
+                .nx-loader-mark { width:58px; height:58px; margin:auto; display:grid; place-items:center; border-radius:17px; color:#171a10; background:#f2c94c; font-weight:900; font-size:24px; box-shadow:0 20px 55px rgba(242,201,76,.18); }
+                .nx-loader-core p { margin:20px 0 12px; font-weight:800; letter-spacing:.02em; }
+                .nx-loader-core small { display:block; margin-top:10px; color:#8f9981; font-size:10px; }
+                .nx-loader-track { height:3px; overflow:hidden; border-radius:4px; background:rgba(244,238,219,.12); }
+                .nx-loader-track i { display:block; width:var(--nx-load,8%); height:100%; background:#f2c94c; box-shadow:0 0 14px rgba(242,201,76,.45); transition:width .25s ease; }
+            `;
+            document.documentElement.appendChild(style);
+        }
+        let lastResourceCount = 0;
+        let stableChecks = 0;
+        const startedAt = Date.now();
+        const finish = () => {
+            overlay.style.setProperty('--nx-load', '100%');
+            overlay.querySelector('small').textContent = 'Ready';
+            setTimeout(() => overlay.classList.add('nx-loader-done'), 180);
+            setTimeout(() => overlay.remove(), 900);
+        };
+        const timer = setInterval(() => {
+            const resources = performance.getEntriesByType('resource').length;
+            stableChecks = resources === lastResourceCount ? stableChecks + 1 : 0;
+            lastResourceCount = resources;
+            const images = Array.from(document.images);
+            const imageRatio = images.length ? images.filter((image) => image.complete).length / images.length : 0;
+            const domReady = document.readyState !== 'loading';
+            const canvasReady = Boolean(document.querySelector('canvas'));
+            const progress = Math.min(94, 8 + (domReady ? 20 : 0) + Math.min(resources, 30) + Math.round(imageRatio * 22) + (canvasReady ? 14 : 0));
+            overlay.style.setProperty('--nx-load', `${progress}%`);
+            const majorityReady = domReady && canvasReady && imageRatio >= .7 && stableChecks >= 2;
+            if (majorityReady || Date.now() - startedAt > 15000) {
+                clearInterval(timer);
+                finish();
+            }
+        }, 400);
+    }
+
+    createGameLoadingScreen();
 
     function hslToHex(hsl) {
         const match = hsl.match(/hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)/);
@@ -53,9 +122,21 @@
         theme: 'dark',
         emojiEnabled: true,
         glassmorphism: true,
-        volume: 0.5
+        volume: 0.5,
+        performanceMode: 'balanced'
     };
     let config = Object.assign({}, DEFAULT_CONFIG, readStoredJson('nexusChatConfig', {}));
+
+    function applyPerformanceMode(mode) {
+        if (mode === 'native') return;
+        const gameConfig = readStoredJson('surviv_config', {});
+        gameConfig.highResTex = false;
+        gameConfig.screenShake = false;
+        gameConfig.interpolation = mode !== 'low-power';
+        gameConfig.localRotation = false;
+        localStorage.setItem('surviv_config', JSON.stringify(gameConfig));
+    }
+    applyPerformanceMode(config.performanceMode);
 
     let username     = sessionStorage.getItem('nexus_username') || '';
     function getUserColor(name) {
@@ -82,7 +163,12 @@
     let globalMessageHistory = [];
     const directMessageHistory = new Map();
     const socialUnread = new Map();
-    let socialToken = localStorage.getItem('nexus_social_token') || '';
+    const bootstrapToken = window.__NEXUS_BOOTSTRAP__ && window.__NEXUS_BOOTSTRAP__.socialToken;
+    const storedSocialToken = localStorage.getItem('nexus_social_token');
+    let socialToken = isSocialToken(bootstrapToken)
+        ? bootstrapToken
+        : (isSocialToken(storedSocialToken) ? storedSocialToken : createSocialToken());
+    persistSocialToken(socialToken);
     let isChatOpen = false, isMinimized = false, isIdle = false, isDim = false;
     let idleTimer = null, isInputFocused = false, isHovering = false;
     let sendCooldown = false, mentionCount = 0, unreadCount = 0;
@@ -289,13 +375,14 @@
             chatSocket.on('social-session', (session) => {
                 if (session.token) {
                     socialToken = session.token;
-                    localStorage.setItem('nexus_social_token', socialToken);
+                    persistSocialToken(socialToken);
                 }
                 socialProfile = session.profile;
                 socialFriends = Array.isArray(session.friends) ? session.friends : [];
                 socialRequests = Array.isArray(session.requests) ? session.requests : [];
                 globalMessageHistory = Array.isArray(session.globalHistory) ? session.globalHistory : [];
                 renderSocialSidebar();
+                refreshSettingsIdentity();
                 if (activeChannel !== 'game') renderActiveChannel();
             });
             chatSocket.on('social-update', (session) => {
@@ -1042,21 +1129,37 @@
                 font-size: 10px; padding: 1px 4px; font-weight: bold;
             }
             #nx-settings {
-                position: absolute; top: 34px; right: 6px;
-                width: auto; max-width: 280px; max-height: 320px; overflow-y: auto;
-                background: rgba(20, 20, 30, 0.95); backdrop-filter: blur(10px);
-                border: 1px solid #444; padding: 10px;
-                color: #e0e0e0; font-size: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.8);
-                z-index: 100001; border-radius: 12px; min-width: 220px;
+                position: absolute; top: 45px; right: 12px; width: 380px;
+                max-width: calc(100% - 24px); max-height: calc(100% - 62px); overflow-y: auto;
+                background: linear-gradient(155deg, rgba(27,33,22,.99), rgba(11,14,10,.99));
+                backdrop-filter: blur(18px); border: 1px solid rgba(242,201,76,.24); padding: 0;
+                color: var(--nx-text); font-size: 12px; box-shadow: 0 24px 70px rgba(0,0,0,.72);
+                z-index: 100001; border-radius: 18px;
             }
-            #nx-settings label { display: block; margin-top: 10px; font-weight: 600; font-size: 11px; color: #aaa; }
-            #nx-settings input, #nx-settings select { width: 100%; margin-bottom: 5px; background: #2a2a2a; border: 1px solid #444; color: white; padding: 5px; font-size: 12px; border-radius: 4px; box-sizing: border-box; }
+            .nx-settings-head { position:sticky; top:0; z-index:2; display:flex; align-items:center; justify-content:space-between; padding:15px 16px; background:rgba(20,25,16,.97); border-bottom:1px solid var(--nx-glass-border); }
+            .nx-settings-head strong { font-size:15px; letter-spacing:.01em; }
+            .nx-settings-head span { display:block; margin-top:2px; color:var(--nx-text-secondary); font-size:10px; }
+            #nx-settings-close { width:30px; height:30px; padding:0 !important; border-radius:9px !important; font-size:18px !important; }
+            .nx-settings-body { padding:12px; display:grid; gap:10px; }
+            .nx-settings-section { padding:12px; border:1px solid var(--nx-glass-border); border-radius:14px; background:rgba(255,255,255,.025); }
+            .nx-settings-section h4 { margin:0 0 10px; color:var(--nx-accent); font-size:10px; text-transform:uppercase; letter-spacing:.13em; }
+            .nx-settings-grid { display:grid; grid-template-columns:1fr 1fr; gap:9px; }
+            #nx-settings label { display:block; margin:0; font-weight:650; font-size:10px; color:var(--nx-text-secondary); }
+            #nx-settings input, #nx-settings select { width:100%; margin-top:5px; background:rgba(5,8,4,.72); border:1px solid rgba(226,219,183,.18); color:var(--nx-text); padding:8px 9px; font-size:11px; border-radius:9px; box-sizing:border-box; outline:none; }
+            #nx-settings input:focus, #nx-settings select:focus { border-color:rgba(242,201,76,.62); box-shadow:0 0 0 3px rgba(242,201,76,.08); }
+            .nx-account-card { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+            .nx-account-id { font:700 12px ui-monospace,SFMono-Regular,Consolas,monospace; color:var(--nx-text); }
+            .nx-account-hint, .nx-settings-note { color:var(--nx-text-secondary); font-size:10px; line-height:1.45; }
+            .nx-recovery-row { display:flex; gap:7px; margin-top:9px; }
+            .nx-recovery-row input { margin-top:0 !important; }
+            .nx-settings-toggle { display:flex !important; align-items:center; justify-content:space-between; padding:8px 0; color:var(--nx-text) !important; }
+            .nx-settings-toggle input { width:16px !important; height:16px; margin:0 !important; accent-color:#f2c94c; }
             #nx-settings input[type="range"] {
                 -webkit-appearance: none;
                 appearance: none;
                 width: 100%;
                 height: 8px;
-                background: linear-gradient(to right, #4caf50, #ff4444);
+                background: linear-gradient(to right, #718552, #f2c94c);
                 border-radius: 4px;
                 outline: none;
                 padding: 0;
@@ -1069,7 +1172,7 @@
                 height: 18px;
                 border-radius: 50%;
                 background: white;
-                border: 2px solid #ff4444;
+                border: 2px solid #f2c94c;
                 cursor: pointer;
                 box-shadow: 0 0 6px rgba(0,0,0,0.5);
             }
@@ -1078,12 +1181,13 @@
                 height: 18px;
                 border-radius: 50%;
                 background: white;
-                border: 2px solid #ff4444;
+                border: 2px solid #f2c94c;
                 cursor: pointer;
             }
-            #nx-settings button { margin-top: 5px; background: #b71c1c; border: none; color: white; padding: 6px 10px; cursor: pointer; font-size: 12px; border-radius: 4px; }
-            #nx-settings button:hover { background: #8b0000; }
-            #nx-settings small { color: #888; display: block; margin-top: 8px; }
+            #nx-settings button { margin:0; background:linear-gradient(135deg,#f2c94c,#c6a332); border:none; color:#171a10; font-weight:800; padding:8px 10px; cursor:pointer; font-size:11px; border-radius:9px; }
+            #nx-settings button:hover { filter:brightness(1.08); transform:translateY(-1px); }
+            #nx-settings .nx-secondary-btn { background:rgba(255,255,255,.075); color:var(--nx-text); border:1px solid var(--nx-glass-border); }
+            #nx-settings small { color:var(--nx-text-secondary); display:block; margin-top:8px; }
             #nx-autocomplete {
                 position: absolute; bottom: 40px; left: 8px; right: 8px;
                 background: #2a2a2a; border: 1px solid #555;
@@ -1433,24 +1537,35 @@
     }
 
     function buildSettingsPanel() {
+        const safeName = String(username || '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
         settingsPanel.innerHTML = `
-            <label>Your name</label><input type="text" id="cfg-name" value="${username}" maxlength="15">
-            <label>Your color</label><input type="color" id="cfg-authorcolor" value="${hslToHex(authorColor)}">
-            <label>Theme</label><select id="cfg-theme"><option value="dark" ${config.theme==='dark'?'selected':''}>Dark</option><option value="light" ${config.theme==='light'?'selected':''}>Light</option><option value="midnight" ${config.theme==='midnight'?'selected':''}>Midnight</option></select>
-            <label>Volume</label><input type="range" id="cfg-volume" min="0" max="1" step="0.05" value="${config.volume}">
-            <label>Background</label><input type="color" id="cfg-bg" value="${config.bgColor}">
-            <label>Text color</label><input type="color" id="cfg-text" value="${config.textColor}">
-            <label>Size</label><select id="cfg-size"><option value="pequeño" ${config.size==='pequeño'?'selected':''}>Small</option><option value="mediano" ${config.size==='mediano'?'selected':''}>Medium</option><option value="grande" ${config.size==='grande'?'selected':''}>Large</option></select>
-            <label>Position</label><select id="cfg-pos"><option value="top-left" ${config.position==='top-left'?'selected':''}>Top Left</option><option value="top-right" ${config.position==='top-right'?'selected':''}>Top Right</option><option value="bottom-left" ${config.position==='bottom-left'?'selected':''}>Bottom Left</option><option value="bottom-right" ${config.position==='bottom-right'?'selected':''}>Bottom Right</option></select>
-            <label>Chat key</label><button id="cfg-key">${config.activationKeyChar}</button>
-            <label>Dim key</label><button id="cfg-dim-key">${config.dimKeyChar}</button>
-            <label>Auto-hide (s)</label><input type="number" id="cfg-idle" value="${config.idleTimeout}" min="1" max="30">
-            <label>Discord reminders</label><input type="checkbox" id="cfg-discord-reminder" ${config.discordReminder?'checked':''}>
-            <label>Do Not Disturb</label><input type="checkbox" id="cfg-dnd" ${config.dndMode?'checked':''}>
-            <a href="${DISCORD_INVITE}" target="_blank" rel="noopener noreferrer" style="display:block;margin-top:10px;color:#7289da;text-decoration:none;">Join our Discord</a>
-            <small>Made by ! System with ❤️</small>
+            <div class="nx-settings-head"><div><strong>Nexus settings</strong><span>Identity, appearance and performance</span></div><button id="nx-settings-close" class="nx-secondary-btn" aria-label="Close">&times;</button></div>
+            <div class="nx-settings-body">
+                <section class="nx-settings-section"><h4>Your Nexus account</h4><div class="nx-account-card"><div><div id="cfg-nexus-id" class="nx-account-id">Connecting...</div><div class="nx-account-hint">This ID does not depend on your game name.</div></div><button id="cfg-copy-id" class="nx-secondary-btn">Copy ID</button></div><div class="nx-recovery-row"><input id="cfg-recovery-key" type="password" placeholder="Paste an NXR recovery key"><button id="cfg-import-key">Restore</button><button id="cfg-copy-key" class="nx-secondary-btn">Copy key</button></div><small>Keep the recovery key private. It restores the same Nexus ID on another browser or domain.</small></section>
+                <section class="nx-settings-section"><h4>Profile and look</h4><div class="nx-settings-grid"><label>Name<input type="text" id="cfg-name" value="${safeName}" maxlength="15"></label><label>Your color<input type="color" id="cfg-authorcolor" value="${hslToHex(authorColor)}"></label><label>Theme<select id="cfg-theme"><option value="dark" ${config.theme==='dark'?'selected':''}>Survival</option><option value="light" ${config.theme==='light'?'selected':''}>Daylight</option><option value="midnight" ${config.theme==='midnight'?'selected':''}>Midnight</option></select></label><label>Window size<select id="cfg-size"><option value="pequeño" ${config.size==='pequeño'?'selected':''}>Compact</option><option value="mediano" ${config.size==='mediano'?'selected':''}>Medium</option><option value="grande" ${config.size==='grande'?'selected':''}>Large</option></select></label><label>Position<select id="cfg-pos"><option value="top-left" ${config.position==='top-left'?'selected':''}>Top left</option><option value="top-right" ${config.position==='top-right'?'selected':''}>Top right</option><option value="bottom-left" ${config.position==='bottom-left'?'selected':''}>Bottom left</option><option value="bottom-right" ${config.position==='bottom-right'?'selected':''}>Bottom right</option></select></label><label>Volume<input type="range" id="cfg-volume" min="0" max="1" step="0.05" value="${config.volume}"></label></div></section>
+                <section class="nx-settings-section"><h4>Game performance</h4><label>Preset<select id="cfg-performance"><option value="native" ${config.performanceMode==='native'?'selected':''}>Native game settings</option><option value="balanced" ${config.performanceMode==='balanced'?'selected':''}>Balanced</option><option value="low-power" ${config.performanceMode==='low-power'?'selected':''}>Low power</option></select></label><small class="nx-settings-note">Uses real Survev/Resurviv settings: texture resolution, screen shake, interpolation and local rotation. Reload the game after changing it.</small></section>
+                <section class="nx-settings-section"><h4>Controls and alerts</h4><div class="nx-settings-grid"><label>Chat key<button id="cfg-key" class="nx-secondary-btn">${config.activationKeyChar}</button></label><label>Dim key<button id="cfg-dim-key" class="nx-secondary-btn">${config.dimKeyChar}</button></label><label>Auto-hide (seconds)<input type="number" id="cfg-idle" value="${config.idleTimeout}" min="1" max="30"></label></div><label class="nx-settings-toggle">Discord reminders<input type="checkbox" id="cfg-discord-reminder" ${config.discordReminder?'checked':''}></label><label class="nx-settings-toggle">Do not disturb<input type="checkbox" id="cfg-dnd" ${config.dndMode?'checked':''}></label></section>
+            </div>
         `;
 
+        document.getElementById('nx-settings-close').addEventListener('click', () => { settingsPanel.style.display = 'none'; });
+        document.getElementById('cfg-copy-id').addEventListener('click', async function() {
+            if (!socialProfile || !socialProfile.friendCode) return;
+            await navigator.clipboard.writeText(socialProfile.friendCode);
+            this.textContent = 'Copied'; setTimeout(() => { this.textContent = 'Copy ID'; }, 1200);
+        });
+        document.getElementById('cfg-copy-key').addEventListener('click', async function() {
+            await navigator.clipboard.writeText(socialToken);
+            this.textContent = 'Copied'; setTimeout(() => { this.textContent = 'Copy key'; }, 1200);
+        });
+        document.getElementById('cfg-import-key').addEventListener('click', function() {
+            const input = document.getElementById('cfg-recovery-key');
+            const nextToken = input.value.trim();
+            if (!isSocialToken(nextToken)) { input.setCustomValidity('Invalid Nexus recovery key'); input.reportValidity(); return; }
+            input.setCustomValidity(''); socialToken = nextToken; persistSocialToken(socialToken); input.value = '';
+            if (chatSocket) chatSocket.disconnect();
+            chatSocket = null; connectToChat(); addSystemMessage('Nexus account restored. Reconnecting...');
+        });
         document.getElementById('cfg-name').addEventListener('change', function() {
             const newName = this.value.trim().substring(0,15);
             if (!newName || newName === username) { this.value = username; return; }
@@ -1458,8 +1573,6 @@
             else { username = newName; sessionStorage.setItem('nexus_username', username); authorColor = getUserColor(username); localStorage.setItem('nexus_authorColor', authorColor); }
         });
         document.getElementById('cfg-authorcolor').addEventListener('input', function() { authorColor = this.value; localStorage.setItem('nexus_authorColor', authorColor); });
-        document.getElementById('cfg-bg').addEventListener('input', function() { config.bgColor = this.value; chatContainer.style.background = config.bgColor; saveConfig(); });
-        document.getElementById('cfg-text').addEventListener('input', function() { config.textColor = this.value; chatContainer.style.color = config.textColor; saveConfig(); });
         document.getElementById('cfg-size').addEventListener('change', function() { config.size = this.value; applySize(); saveConfig(); });
         document.getElementById('cfg-pos').addEventListener('change', function() { config.position = this.value; applyPosition(); saveConfig(); });
         document.getElementById('cfg-volume').addEventListener('input', function() { config.volume = parseFloat(this.value); saveConfig(); });
@@ -1477,6 +1590,13 @@
         document.getElementById('cfg-discord-reminder').addEventListener('change', function() { config.discordReminder = this.checked; saveConfig(); if (config.discordReminder) startDiscordReminder(); else stopDiscordReminder(); });
         document.getElementById('cfg-dnd').addEventListener('change', function() { config.dndMode = this.checked; const btn = document.getElementById('nx-dnd-btn'); btn.classList.toggle('active', config.dndMode); btn.innerHTML = config.dndMode ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0"/><line x1="1" y1="1" x2="23" y2="23"/></svg>' : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0"/></svg>'; saveConfig(); });
         document.getElementById('cfg-theme').addEventListener('change', function() { config.theme = this.value; applyTheme(config.theme); saveConfig(); });
+        document.getElementById('cfg-performance').addEventListener('change', function() { config.performanceMode = this.value; applyPerformanceMode(config.performanceMode); saveConfig(); addSystemMessage('Performance preset saved. Reload the game to apply every change.'); });
+        refreshSettingsIdentity();
+    }
+
+    function refreshSettingsIdentity() {
+        const id = document.getElementById('cfg-nexus-id');
+        if (id) id.textContent = socialProfile && socialProfile.friendCode ? socialProfile.friendCode : 'Connecting...';
     }
 
     function applyTheme(theme) { chatContainer.classList.remove('theme-dark', 'theme-light', 'theme-midnight'); chatContainer.classList.add('theme-' + theme); }

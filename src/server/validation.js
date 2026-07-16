@@ -9,7 +9,7 @@ const LIMITS = Object.freeze({
   activePolls: 10,
   history: 50,
   messageId: 80,
-  friendCode: 12,
+  friendCode: 14,
 });
 
 const ALLOWED_REACTIONS = new Set(['👍', '😂', '😮', '❤️', '🔥']);
@@ -49,8 +49,8 @@ function readUsername(value) {
 function readFriendCode(value) {
   const result = readText(value, { name: 'Friend code', max: LIMITS.friendCode });
   if (!result.ok) return result;
-  if (!/^NX-[0-9A-F]{6}$/i.test(result.value)) {
-    return { ok: false, error: 'Friend code must look like NX-12AB34.' };
+  if (!/^NX-[0-9A-F]{6,8}$/i.test(result.value)) {
+    return { ok: false, error: 'Friend code must look like NX-12AB34 or NX-12AB34CD.' };
   }
   return { ok: true, value: result.value.toUpperCase() };
 }

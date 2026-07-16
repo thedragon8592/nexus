@@ -4,6 +4,7 @@ const path = require('path');
 
 const MAX_GLOBAL_HISTORY = 100;
 const MAX_DIRECT_HISTORY = 100;
+const ACCESS_TOKEN_PATTERN = /^(?:NXR-)?[A-Za-z0-9_-]{40,160}$/;
 
 function hashToken(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
@@ -11,6 +12,22 @@ function hashToken(token) {
 
 function normalizeFriendCode(value) {
   return typeof value === 'string' ? value.trim().toUpperCase() : '';
+}
+
+function createAccessToken() {
+  return `NXR-${crypto.randomBytes(32).toString('base64url')}`;
+}
+
+function isAccessToken(token) {
+  return typeof token === 'string' && ACCESS_TOKEN_PATTERN.test(token);
+}
+
+function deterministicIdentity(token) {
+  const digest = crypto.createHash('sha256').update(`nexus-account-v1:${token}`).digest('hex');
+  return {
+    id: `nx_${digest.slice(0, 32)}`,
+    friendCode: `NX-${digest.slice(32, 40).toUpperCase()}`,
+  };
 }
 
 class SocialStore {
@@ -52,7 +69,7 @@ class SocialStore {
   }
 
   findByToken(token) {
-    if (typeof token !== 'string' || token.length < 20 || token.length > 200) return null;
+    if (!isAccessToken(token)) return null;
     const tokenHash = hashToken(token);
     return Object.values(this.data.users).find((user) => user.tokenHash === tokenHash) || null;
   }
@@ -62,22 +79,36 @@ class SocialStore {
     return Object.values(this.data.users).find((user) => user.friendCode === normalized) || null;
   }
 
-  uniqueFriendCode() {
+  uniqueFriendCode(preferred) {
+    if (preferred && !this.findByFriendCode(preferred)) return preferred;
     let code;
-    do code = `NX-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+    do code = `NX-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
     while (this.findByFriendCode(code));
     return code;
   }
 
-  async register(username) {
-    const token = crypto.randomBytes(32).toString('base64url');
+  async register(username, requestedToken) {
+    const token = isAccessToken(requestedToken) ? requestedToken : createAccessToken();
+    const identity = deterministicIdentity(token);
+    const existing = this.data.users[identity.id];
+    if (existing && existing.tokenHash === hashToken(token)) return { token, user: existing };
     const user = {
-      id: crypto.randomUUID(), username, friendCode: this.uniqueFriendCode(),
+      id: identity.id, username, friendCode: this.uniqueFriendCode(identity.friendCode),
       tokenHash: hashToken(token), friendIds: [], createdAt: Date.now(), updatedAt: Date.now(),
     };
     this.data.users[user.id] = user;
     await this.save();
     return { token, user };
+  }
+
+  async ensureIdentity(token, username) {
+    const existing = this.findByToken(token);
+    if (existing) {
+      await this.updateUsername(existing.id, username);
+      return { token: null, user: existing, restored: false };
+    }
+    const registration = await this.register(username, token);
+    return { ...registration, restored: isAccessToken(token) };
   }
 
   async updateUsername(userId, username) {
@@ -164,4 +195,11 @@ class SocialStore {
   }
 }
 
-module.exports = { SocialStore, hashToken, normalizeFriendCode };
+module.exports = {
+  SocialStore,
+  createAccessToken,
+  deterministicIdentity,
+  hashToken,
+  isAccessToken,
+  normalizeFriendCode,
+};

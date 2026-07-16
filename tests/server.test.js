@@ -158,7 +158,7 @@ test('social accounts support global chat, friend requests and direct messages',
   const aliceJoin = await join(alice, 'social-game', 'Alice');
   const bobJoin = await join(bob, 'social-game', 'Bob');
 
-  assert.match(aliceJoin.socialSession.profile.friendCode, /^NX-[0-9A-F]{6}$/);
+  assert.match(aliceJoin.socialSession.profile.friendCode, /^NX-[0-9A-F]{8}$/);
   assert.ok(aliceJoin.socialSession.token);
 
   const requestReceived = nextEvent(bob, 'friend-request-received');

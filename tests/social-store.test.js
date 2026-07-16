@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { SocialStore } = require('../src/server/social-store');
+const { SocialStore, createAccessToken } = require('../src/server/social-store');
 
 test('social data survives a store restart without persisting raw access tokens', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nexus-social-'));
@@ -21,4 +21,17 @@ test('social data survives a store restart without persisting raw access tokens'
   const authenticated = second.findByToken(registration.token);
   assert.equal(authenticated.username, 'PersistentPlayer');
   assert.equal(second.data.globalMessages[0].text, 'saved message');
+});
+
+test('a recovery key derives the same Nexus ID without server storage', async () => {
+  const token = createAccessToken();
+  const first = new SocialStore(null);
+  const second = new SocialStore(null);
+
+  const initial = await first.register('FirstName', token);
+  const restored = await second.register('ChangedName', token);
+
+  assert.equal(restored.user.id, initial.user.id);
+  assert.equal(restored.user.friendCode, initial.user.friendCode);
+  assert.notEqual(restored.user.username, initial.user.username);
 });

@@ -1,14 +1,14 @@
 {
-  "version": "3.0.0",
+  "version": "3.1.0",
   "changes": [
-    "Persistent global chat",
-    "Friends and direct messages",
-    "Large Discord-style floating interface",
-    "Compact chat-only mode"
+    "Stable Nexus ID with a portable recovery key",
+    "Self-contained Tampermonkey loader for reliable global chat",
+    "Game loading screen and redesigned settings",
+    "Safe performance presets based on real game settings"
   ],
   "bugs": [
-    "Access tokens are stored as secure hashes on the server",
-    "Social histories are capped and written atomically",
-    "Match, global and direct conversations stay separated"
+    "Nexus identity remains stable even when server storage restarts",
+    "The same identity is shared between Resurviv and Survev",
+    "Removed guessed FPS, ping and WebSocket optimizer patches"
   ]
 }
