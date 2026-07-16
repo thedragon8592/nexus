@@ -5,6 +5,7 @@ const path = require('path');
 const { Server } = require('socket.io');
 const packageJson = require('../../package.json');
 const { SocialStore } = require('./social-store');
+const { TursoSocialStore } = require('./turso-social-store');
 const {
   ALLOWED_REACTIONS,
   LIMITS,
@@ -86,7 +87,16 @@ function createNexusServer(options = {}) {
   const dataFile = hasDataFileOption
     ? options.dataFile
     : (process.env.DATA_FILE || path.join(__dirname, '../../data/nexus-social.json'));
-  const socialStore = options.socialStore || new SocialStore(dataFile);
+  const tursoUrl = options.tursoUrl ?? process.env.TURSO_DATABASE_URL;
+  const tursoAuthToken = options.tursoAuthToken ?? process.env.TURSO_AUTH_TOKEN;
+  if (!hasDataFileOption && Boolean(tursoUrl) !== Boolean(tursoAuthToken)) {
+    throw new Error('TURSO_DATABASE_URL and TURSO_AUTH_TOKEN must be configured together.');
+  }
+  if (!hasDataFileOption && process.env.NODE_ENV === 'production' && (!tursoUrl || !tursoAuthToken)) {
+    throw new Error('Persistent Turso storage is required in production.');
+  }
+  const socialStore = options.socialStore
+    || (hasDataFileOption || !tursoUrl ? new SocialStore(dataFile) : new TursoSocialStore({ url: tursoUrl, authToken: tursoAuthToken }));
 
   function getOnlineAccountIds() {
     return new Set(Array.from(onlineAccounts.entries()).filter(([, sockets]) => sockets.size > 0).map(([id]) => id));
@@ -98,18 +108,16 @@ function createNexusServer(options = {}) {
     for (const socketId of sockets) io.to(socketId).emit(event, payload);
   }
 
-  function emitSocialUpdate(accountId) {
-    const snapshot = socialStore.snapshot(accountId, getOnlineAccountIds());
+  async function emitSocialUpdate(accountId) {
+    const snapshot = await socialStore.snapshot(accountId, getOnlineAccountIds());
     if (!snapshot) return;
     const { globalHistory, ...social } = snapshot;
     emitToAccount(accountId, 'social-update', social);
   }
 
-  function refreshFriendPresence(accountId) {
-    const user = socialStore.data.users[accountId];
-    if (!user) return;
-    emitSocialUpdate(accountId);
-    for (const friendId of user.friendIds) emitSocialUpdate(friendId);
+  async function refreshFriendPresence(accountId) {
+    const friendIds = await socialStore.friendIds(accountId);
+    await Promise.all([emitSocialUpdate(accountId), ...friendIds.map((friendId) => emitSocialUpdate(friendId))]);
   }
 
   function getUserList(gameId) {
@@ -150,6 +158,7 @@ function createNexusServer(options = {}) {
       version: packageJson.version,
       activeRooms: rooms.size,
       onlineUsers: getOnlineCount(),
+      storage: socialStore.kind,
       uptimeSeconds: Math.floor(process.uptime()),
     });
   });
@@ -249,13 +258,14 @@ function createNexusServer(options = {}) {
       }
 
       socket.emit('join-accepted', { gameId, username });
+      const socialSnapshot = await socialStore.snapshot(currentAccountId, getOnlineAccountIds());
       socket.emit('social-session', {
         token: issuedToken,
         protocolVersion: 2,
         serverVersion: packageJson.version,
-        ...socialStore.snapshot(currentAccountId, getOnlineAccountIds()),
+        ...socialSnapshot,
       });
-      refreshFriendPresence(currentAccountId);
+      await refreshFriendPresence(currentAccountId);
       socket.emit('chat-history', roomHistory.get(gameId));
       const pinned = roomPinned.get(gameId);
       if (pinned) socket.emit('pinned-message', pinned);
@@ -289,7 +299,7 @@ function createNexusServer(options = {}) {
       socket.emit('system-message', `✅ Your name is now ${newUsername}.`);
       socket.to(currentGame).emit('system-message', `${oldName} changed their name to ${newUsername}.`);
       io.to(currentGame).emit('user-list', getUserList(currentGame));
-      if (currentAccountId) refreshFriendPresence(currentAccountId);
+      if (currentAccountId) await refreshFriendPresence(currentAccountId);
     });
 
     socket.on('chat-message', (rawPayload) => {
@@ -354,8 +364,7 @@ function createNexusServer(options = {}) {
       }
       socket.emit('friend-request-sent', { to: result.to });
       emitToAccount(result.request.toId, 'friend-request-received', { from: result.from });
-      emitSocialUpdate(result.request.toId);
-      emitSocialUpdate(result.request.fromId);
+      await Promise.all([emitSocialUpdate(result.request.toId), emitSocialUpdate(result.request.fromId)]);
     });
 
     socket.on('friend-response', async (payload) => {
@@ -369,13 +378,12 @@ function createNexusServer(options = {}) {
         protocolError(result.code, result.error);
         return;
       }
-      emitSocialUpdate(result.request.fromId);
-      emitSocialUpdate(result.request.toId);
+      await Promise.all([emitSocialUpdate(result.request.fromId), emitSocialUpdate(result.request.toId)]);
     });
 
-    socket.on('direct-history', (friendId) => {
+    socket.on('direct-history', async (friendId) => {
       if (!currentAccountId || typeof friendId !== 'string') return;
-      const history = socialStore.directHistory(currentAccountId, friendId);
+      const history = await socialStore.directHistory(currentAccountId, friendId);
       if (!history) {
         protocolError('NOT_FRIENDS', 'Direct messages are available between friends.');
         return;
@@ -510,7 +518,9 @@ function createNexusServer(options = {}) {
           sockets.delete(socket.id);
           if (sockets.size === 0) onlineAccounts.delete(currentAccountId);
         }
-        refreshFriendPresence(currentAccountId);
+        refreshFriendPresence(currentAccountId).catch((error) => {
+          console.error('[NexusChat] Failed to refresh friend presence', error);
+        });
       }
       limiter.clear();
     });
@@ -522,7 +532,8 @@ function createNexusServer(options = {}) {
     server,
     state: { rooms, roomHistory, roomPolls, roomPinned, roomReactions, onlineAccounts, socialStore },
     version: packageJson.version,
-    start(port = 0) {
+    async start(port = 0) {
+      await socialStore.ready;
       return new Promise((resolve, reject) => {
         server.once('error', reject);
         server.listen(Number(port), options.host || '127.0.0.1', () => {
@@ -531,13 +542,14 @@ function createNexusServer(options = {}) {
         });
       });
     },
-    stop() {
-      return new Promise((resolve) => {
+    async stop() {
+      await new Promise((resolve) => {
         io.close(() => {
           if (!server.listening) resolve();
           else server.close(() => resolve());
         });
       });
+      await socialStore.close?.();
     },
   };
 }

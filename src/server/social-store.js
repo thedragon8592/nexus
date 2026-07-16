@@ -33,6 +33,8 @@ function deterministicIdentity(token) {
 class SocialStore {
   constructor(filePath) {
     this.filePath = filePath;
+    this.kind = filePath ? 'file' : 'memory';
+    this.ready = Promise.resolve();
     this.writeQueue = Promise.resolve();
     this.data = { version: 1, users: {}, friendRequests: {}, globalMessages: [], directMessages: {} };
     this.load();
@@ -131,6 +133,10 @@ class SocialStore {
     return { profile: this.publicUser(user), friends, requests, globalHistory: this.data.globalMessages.slice(-MAX_GLOBAL_HISTORY) };
   }
 
+  friendIds(userId) {
+    return this.data.users[userId]?.friendIds || [];
+  }
+
   async requestFriend(fromId, friendCode) {
     const from = this.data.users[fromId];
     const to = this.findByFriendCode(friendCode);
@@ -193,6 +199,8 @@ class SocialStore {
     await this.save();
     return message;
   }
+
+  async close() {}
 }
 
 module.exports = {

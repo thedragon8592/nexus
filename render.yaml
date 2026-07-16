@@ -14,3 +14,7 @@ services:
         value: production
       - key: HOST
         value: 0.0.0.0
+      - key: TURSO_DATABASE_URL
+        value: libsql://nexus-thedragon8592.aws-us-east-1.turso.io
+      - key: TURSO_AUTH_TOKEN
+        sync: false
