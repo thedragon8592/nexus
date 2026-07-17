@@ -102,7 +102,8 @@
     function escapeRegex(str) { return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
     function containsMention(text, name) {
         if (!text || !name) return false;
-        return new RegExp(`(^|\\s)@${escapeRegex(name)}(?=\\s|$|[.,!?;:])`, 'i').test(text);
+        const namePattern = String(name).trim().split(/\s+/).map(escapeRegex).join('\\s+');
+        return new RegExp(`(^|\\s)@${namePattern}(?=\\s|$|[.,!?;:])`, 'i').test(text);
     }
     function readStoredJson(key, fallback) {
         try {
@@ -317,24 +318,37 @@
             if (!sharedAudioContext || sharedAudioContext.state === 'closed') sharedAudioContext = new AudioContextClass();
             if (sharedAudioContext.state === 'suspended') sharedAudioContext.resume().catch(() => {});
             const patterns = {
-                open: [[600, 0, .07], [900, .045, .08]],
-                close: [[900, 0, .07], [600, .045, .08]],
-                send: [[1100, 0, .055]],
-                mention: [[780, 0, .14], [1020, .12, .16]],
-                default: [[700, 0, .08]]
+                open: [[420, 0, .08, 'triangle', .7], [680, .045, .11, 'sine', .85], [980, .09, .13, 'sine', .6]],
+                close: [[880, 0, .07, 'sine', .65], [560, .045, .1, 'triangle', .7], [320, .09, .12, 'sine', .55]],
+                send: [[760, 0, .05, 'triangle', .6], [1240, .035, .09, 'sine', .72]],
+                receive: [[520, 0, .07, 'sine', .52], [760, .055, .1, 'triangle', .48]],
+                mention: [[620, 0, .11, 'triangle', .85], [940, .09, .14, 'sine', 1], [1320, .19, .2, 'sine', .78]],
+                navigate: [[440, 0, .045, 'triangle', .42], [660, .03, .065, 'sine', .5]],
+                panel: [[340, 0, .07, 'sine', .5], [720, .045, .1, 'triangle', .58]],
+                toggle: [[560, 0, .055, 'square', .3], [840, .035, .075, 'sine', .5]],
+                success: [[520, 0, .07, 'triangle', .58], [780, .06, .09, 'sine', .66], [1120, .12, .13, 'sine', .55]],
+                friend: [[480, 0, .1, 'triangle', .65], [720, .075, .12, 'sine', .75], [960, .15, .16, 'sine', .6]],
+                reaction: [[980, 0, .04, 'sine', .38], [1180, .025, .065, 'triangle', .34]],
+                error: [[260, 0, .1, 'sawtooth', .34], [190, .075, .15, 'triangle', .42]],
+                default: [[700, 0, .08, 'sine', .5]]
             };
-            const volume = Math.max(0, Math.min(1, Number(config.volume ?? .5))) * .12;
+            const volume = Math.max(0, Math.min(1, Number(config.volume ?? .5))) * .095;
             if (volume <= 0) return;
             const startAt = sharedAudioContext.currentTime;
-            (patterns[type] || patterns.default).forEach(([frequency, delay, duration]) => {
+            const filter = sharedAudioContext.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.value = 4200;
+            filter.Q.value = .7;
+            filter.connect(sharedAudioContext.destination);
+            (patterns[type] || patterns.default).forEach(([frequency, delay, duration, waveform = 'sine', level = 1]) => {
                 const oscillator = sharedAudioContext.createOscillator();
                 const gain = sharedAudioContext.createGain();
-                oscillator.type = 'sine';
+                oscillator.type = waveform;
                 oscillator.frequency.value = frequency;
-                gain.gain.setValueAtTime(volume, startAt + delay);
+                gain.gain.setValueAtTime(volume * level, startAt + delay);
                 gain.gain.exponentialRampToValueAtTime(.0001, startAt + delay + duration);
                 oscillator.connect(gain);
-                gain.connect(sharedAudioContext.destination);
+                gain.connect(filter);
                 oscillator.start(startAt + delay);
                 oscillator.stop(startAt + delay + duration);
             });
@@ -499,7 +513,7 @@
                     playSound('mention');
                     totalMentionsThisGame++;
                     if (!isInputFocused || isDim || isIdle) mentionCount++;
-                }
+                } else if (!isBlocked && author !== username) playSound('receive');
                 if (!isChatOpen && !isBlocked && author !== username) unreadCount++;
                 updateBadges();
                 totalMessagesThisGame++;
@@ -558,6 +572,7 @@
                 const mentioned = message.authorId !== socialProfile?.id
                     && containsMention(message.text, username);
                 if (mentioned && !isUserBlocked(message.authorId, message.author)) playSound('mention');
+                else if (message.authorId !== socialProfile?.id && !isUserBlocked(message.authorId, message.author)) playSound('receive');
                 if (activeChannel === 'global' && isChatOpen && !isDim) renderSocialMessage(message, false);
                 else if (message.authorId !== socialProfile?.id && !isUserBlocked(message.authorId, message.author)) incrementSocialUnread('global');
             });
@@ -580,10 +595,11 @@
                 const history = directMessageHistory.get(friendId) || [];
                 if (!history.some((item) => item.id === message.id)) history.push(message);
                 directMessageHistory.set(friendId, history.slice(-100));
+                if (message.fromId !== socialProfile?.id) playSound(containsMention(message.text, username) ? 'mention' : 'receive');
                 if (activeChannel === 'direct' && selectedFriend?.id === friendId && isChatOpen && !isDim) renderSocialMessage(message, true);
                 else if (message.fromId !== socialProfile?.id) incrementSocialUnread(friendId);
             });
-            chatSocket.on('friend-request-received', ({ from }) => addChannelNotice(`${from.username} sent you a friend request.`));
+            chatSocket.on('friend-request-received', ({ from }) => { playSound('friend'); addChannelNotice(`${from.username} sent you a friend request.`); });
             chatSocket.on('friend-request-sent', ({ to }) => addChannelNotice(`Friend request sent to ${to.username}.`));
             chatSocket.on('friend-removed', ({ friendId }) => {
                 if (selectedFriend?.id === friendId) setActiveChannel('global');
@@ -593,6 +609,7 @@
                 socialProfile = cacheProfile(profile);
                 renderSocialSidebar();
                 refreshSettingsIdentity();
+                playSound('success');
                 addChannelNotice('Profile saved.');
             });
             chatSocket.on('system-message', (text) => addSystemMessage(text));
@@ -625,12 +642,14 @@
                         reactionsSpan.appendChild(span);
                     }
                 }
+                playSound('reaction');
             });
             chatSocket.on('global-reaction-update', ({ messageId, reactions }) => {
                 const message = globalMessageHistory.find((item) => item.id === messageId);
                 if (message) message.reactions = reactions || {};
                 const msgDiv = messageArea?.querySelector(`.social-msg[data-msgid="${CSS.escape(messageId)}"]`);
                 if (msgDiv) renderReactionCounts(msgDiv.querySelector('.reactions'), reactions || {});
+                playSound('reaction');
             });
             chatSocket.on('user-typing', ({ username: typer, typing }) => {
                 updateTypingUser('game', typer, typer, typing);
@@ -802,11 +821,13 @@
 
     function storePoll(channel, poll) {
         if (!poll || !poll.pollId) return;
+        const isNew = !channelPolls[channel].has(poll.pollId);
         channelPolls[channel].set(poll.pollId, {
             pollId: poll.pollId,
             question: poll.question,
             options: Array.isArray(poll.options) ? poll.options : [],
         });
+        if (isNew) playSound('panel');
         if (activeChannel === channel) renderPoll(poll.pollId, poll.question, poll.options, channel);
     }
 
@@ -857,6 +878,7 @@
     }
 
     function showError(msg) {
+        playSound('error');
         const div = document.createElement('div');
         div.className = 'error-msg';
         div.textContent = '⚠️ ' + msg;
@@ -955,15 +977,34 @@
 
     function renderRichText(element, text) {
         element.textContent = '';
-        const parts = String(text || '').split(/(@[A-Za-z0-9_.-]{1,15})/g);
-        parts.forEach((part) => {
-            if (part.startsWith('@')) {
-                const mention = document.createElement('span');
-                mention.className = `nx-inline-mention${part.slice(1).trim().toLowerCase() === username.trim().toLowerCase() ? ' is-you' : ''}`;
-                mention.textContent = part;
-                element.appendChild(mention);
-            } else element.appendChild(document.createTextNode(part));
-        });
+        const value = String(text || '');
+        const names = [
+            username,
+            ...Array.from(profileCache.values(), (profile) => profile?.username),
+            ...(window.__nexusOnlineUsers || []).map((profile) => profile?.username),
+            ...globalUsers.map((profile) => profile?.username),
+            ...socialFriends.map((profile) => profile?.username),
+        ].filter(Boolean);
+        const uniqueNames = Array.from(new Set(names.map((name) => String(name).trim()).filter(Boolean)))
+            .sort((first, second) => second.length - first.length);
+        if (!uniqueNames.length) {
+            element.textContent = value;
+            return;
+        }
+        const alternatives = uniqueNames.map((name) => name.split(/\s+/).map(escapeRegex).join('\\s+')).join('|');
+        const pattern = new RegExp(`(^|\\s)(@(?:${alternatives}))(?=\\s|$|[.,!?;:])`, 'gi');
+        let lastIndex = 0;
+        let match;
+        while ((match = pattern.exec(value))) {
+            const mentionStart = match.index + match[1].length;
+            element.appendChild(document.createTextNode(value.slice(lastIndex, mentionStart)));
+            const mention = document.createElement('span');
+            mention.className = `nx-inline-mention${containsMention(match[2], username) ? ' is-you' : ''}`;
+            mention.textContent = match[2];
+            element.appendChild(mention);
+            lastIndex = pattern.lastIndex;
+        }
+        element.appendChild(document.createTextNode(value.slice(lastIndex)));
     }
 
     function hideProfilePopover(delay = 120) {
@@ -1016,6 +1057,7 @@
     }
 
     function setActiveChannel(channel, friend = null) {
+        const changed = activeChannel !== channel || (channel === 'direct' && selectedFriend?.id !== friend?.id);
         stopTyping();
         activeChannel = channel;
         selectedFriend = friend;
@@ -1024,6 +1066,7 @@
         if (channel === 'direct' && friend && chatSocket?.connected) chatSocket.emit('direct-history', friend.id);
         renderSocialSidebar();
         renderActiveChannel();
+        if (changed) playSound('navigate');
     }
 
     function preparePrivateMessage(name) {
@@ -1321,6 +1364,7 @@
         refreshSettingsIdentity();
         refreshSettingsDiagnostics();
         if (pageName === 'performance') refreshPerformanceDetails();
+        playSound('panel');
     }
 
     function createChatUI() {
@@ -1867,12 +1911,13 @@
         document.getElementById('nx-cfg-btn').addEventListener('click', () => {
             const opening = settingsPanel.style.display !== 'block';
             if (opening) showSettingsPage('account');
-            else { settingsPanel.style.display = 'none'; startIdleTimer(); }
+            else { settingsPanel.style.display = 'none'; startIdleTimer(); playSound('close'); }
         });
         document.querySelectorAll('.nx-channel').forEach((button) => button.addEventListener('click', () => setActiveChannel(button.dataset.channel)));
         document.getElementById('nx-add-friend-toggle').addEventListener('click', () => {
             const form = document.getElementById('nx-add-friend');
             form.hidden = !form.hidden;
+            playSound(form.hidden ? 'close' : 'panel');
             if (!form.hidden) document.getElementById('nx-friend-code').focus();
         });
         document.getElementById('nx-add-friend').addEventListener('submit', (event) => {
@@ -2032,9 +2077,10 @@
             ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0"/><line x1="1" y1="1" x2="23" y2="23"/></svg>'
             : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0"/></svg>';
         saveConfig();
+        playSound('toggle');
     }
 
-    function toggleDim() { isDim = !isDim; applyDim(isDim); }
+    function toggleDim() { isDim = !isDim; applyDim(isDim); playSound('toggle'); }
     function applyDim(state) {
         isDim = Boolean(state);
         document.documentElement.classList.toggle('nx-chat-dimmed', isDim);
@@ -2064,6 +2110,7 @@
         chatContainer.classList.toggle('social-collapsed', isMinimized);
         const button = document.getElementById('nx-min-btn');
         if (button) button.title = isMinimized ? 'Show friends and channels' : 'Compact chat mode';
+        playSound(isMinimized ? 'close' : 'open');
     }
     function setIdle() { if (!isInputFocused && !isHovering && isChatOpen && !isDim && settingsPanel.style.display !== 'block') { isIdle = true; chatContainer.classList.add('idle'); } }
     function clearIdle() { isIdle = false; chatContainer.classList.remove('idle'); }
@@ -2173,7 +2220,7 @@
     function getMentionCandidates() {
         const source = activeChannel === 'global'
             ? globalUsers
-            : (activeChannel === 'direct' ? socialFriends : (window.__nexusOnlineUsers || []));
+            : (activeChannel === 'direct' ? (selectedFriend ? [selectedFriend] : []) : (window.__nexusOnlineUsers || []));
         const seen = new Set();
         return source
             .map((person) => typeof person === 'string' ? { username: person } : person)
@@ -2286,20 +2333,23 @@
         const renderedMessagesCard = document.getElementById('cfg-performance-messages')?.closest('.nx-status-card');
         if (renderedMessagesCard) renderedMessagesCard.insertAdjacentHTML('beforebegin', '<div class="nx-status-card"><span>Client rotation</span><strong id="cfg-performance-rotation">—</strong></div>');
 
-        document.getElementById('nx-settings-close').addEventListener('click', () => { settingsPanel.style.display = 'none'; });
+        document.getElementById('nx-settings-close').addEventListener('click', () => { settingsPanel.style.display = 'none'; playSound('close'); });
         document.querySelectorAll('.nx-settings-nav button').forEach((button) => button.addEventListener('click', () => {
             document.querySelectorAll('.nx-settings-nav button').forEach((item) => item.classList.toggle('active', item === button));
             document.querySelectorAll('.nx-settings-page').forEach((page) => page.classList.toggle('active', page.dataset.page === button.dataset.settingsPage));
             if (button.dataset.settingsPage === 'diagnostics') refreshSettingsDiagnostics();
             if (button.dataset.settingsPage === 'performance') refreshPerformanceDetails();
+            playSound('navigate');
         }));
         document.getElementById('cfg-copy-id').addEventListener('click', async function() {
             if (!socialProfile || !socialProfile.friendCode) return;
             await copyText(socialProfile.friendCode);
+            playSound('success');
             this.textContent = 'Copied'; setTimeout(() => { this.textContent = 'Copy ID'; }, 1200);
         });
         document.getElementById('cfg-copy-key').addEventListener('click', async function() {
             await copyText(socialToken);
+            playSound('success');
             this.textContent = 'Copied'; setTimeout(() => { this.textContent = 'Copy key'; }, 1200);
         });
         document.getElementById('cfg-save-profile').addEventListener('click', function() {
@@ -2319,7 +2369,7 @@
         });
         document.getElementById('cfg-authorcolor').addEventListener('input', function() { authorColor = this.value; localStorage.setItem('nexus_authorColor', authorColor); });
         document.getElementById('cfg-size').addEventListener('change', function() { config.size = this.value; applySize(); saveConfig(); });
-        document.getElementById('cfg-pos').addEventListener('change', function() { config.position = this.value; applyPosition(); saveConfig(); });
+        document.getElementById('cfg-pos').addEventListener('change', function() { config.position = this.value; applyPosition(); saveConfig(); playSound('toggle'); });
         document.getElementById('cfg-volume').addEventListener('input', function() { config.volume = parseFloat(this.value); saveConfig(); });
         document.getElementById('cfg-key').addEventListener('click', function() {
             this.textContent = 'Press a key...';
@@ -2338,6 +2388,7 @@
             config.theme = button.dataset.theme;
             applyTheme(config.theme); saveConfig();
             document.querySelectorAll('.nx-theme-card').forEach((item) => item.classList.toggle('active', item === button));
+            playSound('toggle');
         }));
         const applySelectedPerformance = async () => {
             const select = document.getElementById('cfg-performance');
@@ -2349,6 +2400,7 @@
             await applyPerformanceMode(config.performanceMode, { showProgress: true });
             select.disabled = false;
             button.disabled = false;
+            playSound('success');
             addChannelNotice(`${selectedPerformanceProfile().label} optimization applied without reloading.`);
         };
         document.getElementById('cfg-performance').addEventListener('change', applySelectedPerformance);
