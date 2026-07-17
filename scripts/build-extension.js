@@ -4,6 +4,7 @@ const path = require('path');
 const projectRoot = path.resolve(__dirname, '..');
 const source = path.join(projectRoot, 'public', 'client.js');
 const packageVersion = require(path.join(projectRoot, 'package.json')).version;
+const canonicalManifest = JSON.parse(fs.readFileSync(path.join(projectRoot, 'extension', 'manifest.json'), 'utf8'));
 const extensionDirectories = [
   path.join(projectRoot, 'extension'),
   process.env.NEXUS_EXTENSION_DIR,
@@ -17,7 +18,7 @@ for (const directory of extensionDirectories) {
   fs.copyFileSync(source, path.join(directory, 'nexus-chat.js'));
   const manifestPath = path.join(directory, 'manifest.json');
   if (fs.existsSync(manifestPath)) {
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const manifest = { ...canonicalManifest };
     manifest.version = packageVersion;
     manifest.host_permissions = ['https://nexus-chat-free.onrender.com/*'];
     fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
