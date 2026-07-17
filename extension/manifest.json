@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Nexus Chat",
-  "version": "3.3.0",
+  "version": "3.4.0",
   "description": "Nexus chat, social features and live optimizer for resurviv.biz and survev.io",
   "icons": {
     "16": "icon16.png",
@@ -21,7 +21,7 @@
         "nexus-chat.js"
       ],
       "run_at": "document_start",
-      "all_frames": true
+      "all_frames": false
     }
   ],
   "host_permissions": [

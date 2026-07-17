@@ -1,16 +1,20 @@
 {
-  "version": "3.3.0",
+  "version": "3.4.0",
   "changes": [
-    "Profiles with avatars, bios, and hover actions",
-    "Private messages, mentions, reactions, and typing status in Match and Global",
-    "User blocking in Match and Global",
-    "Friend removal and hover-to-add friend requests",
-    "English-only interface and settings"
+    "Complete command support in Match and Global",
+    "Channel-correct command results, global polls, pins, and statistics",
+    "Smart mention suggestions in Match, Global, and friend messages",
+    "Reliable mentions for usernames containing spaces",
+    "Futuristic sound cues with volume and Do Not Disturb controls",
+    "Integrated live performance presets with client-side rotation preserved",
+    "Profiles, friends, private messages, reactions, typing, and user blocking"
   ],
   "bugs": [
-    "Fixed Global and Match message rendering and reaction history",
-    "Prevented commands from being interpreted in friend DMs",
-    "Synchronized the packaged browser extension with Tampermonkey",
-    "Persisted profiles and Global reactions in Turso"
+    "Scoped friend-message mentions to the conversation currently open",
+    "Fixed private-message selection and avatar refresh races",
+    "Kept command output inside the originating channel",
+    "Prevented the hidden interface from intercepting game input",
+    "Reduced rendering, audio, history, and observer overhead",
+    "Synchronized the web client, userscript, and packaged extension"
   ]
 }

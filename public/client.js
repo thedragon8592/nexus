@@ -4,7 +4,7 @@
     window.__nexusChatLoaded = true;
     window.__nexusIntegratedOptimizer = true;
 
-    const EXT_VERSION = '3.3.0';
+    const EXT_VERSION = '3.4.0';
     const DOWNLOAD_URL = 'https://wnexuschat.netlify.app';
     const SERVER_URL    = window.__NEXUS_BOOTSTRAP__ && window.__NEXUS_BOOTSTRAP__.serverUrl
         ? window.__NEXUS_BOOTSTRAP__.serverUrl
@@ -307,15 +307,19 @@
     let historySaveTimer = null;
     let historyDirty = false;
     let sharedAudioContext = null;
+    let sharedAudioFilter = null;
 
     applyPerformanceMode(config.performanceMode);
 
     function playSound(type) {
-        if (config.dndMode && type !== 'mention') return;
+        if (config.dndMode) return;
         try {
             const AudioContextClass = window.AudioContext || window.webkitAudioContext;
             if (!AudioContextClass) return;
-            if (!sharedAudioContext || sharedAudioContext.state === 'closed') sharedAudioContext = new AudioContextClass();
+            if (!sharedAudioContext || sharedAudioContext.state === 'closed') {
+                sharedAudioContext = new AudioContextClass();
+                sharedAudioFilter = null;
+            }
             if (sharedAudioContext.state === 'suspended') sharedAudioContext.resume().catch(() => {});
             const patterns = {
                 open: [[420, 0, .08, 'triangle', .7], [680, .045, .11, 'sine', .85], [980, .09, .13, 'sine', .6]],
@@ -335,11 +339,13 @@
             const volume = Math.max(0, Math.min(1, Number(config.volume ?? .5))) * .095;
             if (volume <= 0) return;
             const startAt = sharedAudioContext.currentTime;
-            const filter = sharedAudioContext.createBiquadFilter();
-            filter.type = 'lowpass';
-            filter.frequency.value = 4200;
-            filter.Q.value = .7;
-            filter.connect(sharedAudioContext.destination);
+            if (!sharedAudioFilter) {
+                sharedAudioFilter = sharedAudioContext.createBiquadFilter();
+                sharedAudioFilter.type = 'lowpass';
+                sharedAudioFilter.frequency.value = 4200;
+                sharedAudioFilter.Q.value = .7;
+                sharedAudioFilter.connect(sharedAudioContext.destination);
+            }
             (patterns[type] || patterns.default).forEach(([frequency, delay, duration, waveform = 'sine', level = 1]) => {
                 const oscillator = sharedAudioContext.createOscillator();
                 const gain = sharedAudioContext.createGain();
@@ -348,7 +354,7 @@
                 gain.gain.setValueAtTime(volume * level, startAt + delay);
                 gain.gain.exponentialRampToValueAtTime(.0001, startAt + delay + duration);
                 oscillator.connect(gain);
-                gain.connect(filter);
+                gain.connect(sharedAudioFilter);
                 oscillator.start(startAt + delay);
                 oscillator.stop(startAt + delay + duration);
             });
@@ -642,14 +648,16 @@
                         reactionsSpan.appendChild(span);
                     }
                 }
-                playSound('reaction');
+                if (msgDiv) playSound('reaction');
             });
             chatSocket.on('global-reaction-update', ({ messageId, reactions }) => {
                 const message = globalMessageHistory.find((item) => item.id === messageId);
                 if (message) message.reactions = reactions || {};
                 const msgDiv = messageArea?.querySelector(`.social-msg[data-msgid="${CSS.escape(messageId)}"]`);
-                if (msgDiv) renderReactionCounts(msgDiv.querySelector('.reactions'), reactions || {});
-                playSound('reaction');
+                if (msgDiv) {
+                    renderReactionCounts(msgDiv.querySelector('.reactions'), reactions || {});
+                    playSound('reaction');
+                }
             });
             chatSocket.on('user-typing', ({ username: typer, typing }) => {
                 updateTypingUser('game', typer, typer, typing);
@@ -664,6 +672,10 @@
             chatSocket.on('poll-update', (poll) => updatePoll('game', poll));
             chatSocket.on('global-poll-created', (poll) => storePoll('global', poll));
             chatSocket.on('global-poll-update', (poll) => updatePoll('global', poll));
+            chatSocket.on('global-poll-closed', ({ pollId }) => {
+                channelPolls.global.delete(pollId);
+                messageArea?.querySelector(`.poll-container[data-channel="global"][data-pollid="${CSS.escape(pollId)}"]`)?.remove();
+            });
         } catch(e) { console.error('[NexusChat]', e); }
     }
 

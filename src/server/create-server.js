@@ -24,6 +24,7 @@ const DEFAULT_ORIGINS = new Set([
   'https://survev.io',
   'https://wnexuschat.netlify.app',
 ]);
+const GLOBAL_POLL_TTL_MS = 15 * 60 * 1000;
 
 function originIsAllowed(origin, configuredOrigins) {
   if (!origin) return true;
@@ -158,7 +159,9 @@ function createNexusServer(options = {}) {
       res.setHeader('Vary', 'Origin');
     }
     res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     next();
   }
 
@@ -709,6 +712,11 @@ function createNexusServer(options = {}) {
         question: poll.question,
         options: poll.options,
       });
+      const expiry = setTimeout(() => {
+        if (!globalPolls.delete(pollId)) return;
+        io.emit('global-poll-closed', { pollId });
+      }, GLOBAL_POLL_TTL_MS);
+      expiry.unref?.();
     });
 
     socket.on('poll-vote', (payload) => {
