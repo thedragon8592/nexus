@@ -226,6 +226,22 @@ test('profiles, global private messages, reactions, typing and friend removal wo
   const bobJoin = await join(bob, 'social-features', 'Bob');
   await join(charlie, 'another-match', 'Charlie');
 
+  const globalOnline = nextEvent(alice, 'global-online-list');
+  alice.emit('request-global-online');
+  assert.deepEqual((await globalOnline)[0].map((user) => user.username), ['Alice', 'Bob', 'Charlie']);
+
+  const globalPin = nextEvent(bob, 'global-pinned-message');
+  alice.emit('global-pin-message', 'Global rules');
+  assert.equal((await globalPin)[0], 'Global rules');
+
+  const globalPollCreated = nextEvent(bob, 'global-poll-created');
+  alice.emit('create-global-poll', { question: 'Drop location?', options: ['Docks', 'Bank'] });
+  const [globalPoll] = await globalPollCreated;
+  assert.equal(globalPoll.question, 'Drop location?');
+  const globalPollUpdated = nextEvent(alice, 'global-poll-update');
+  bob.emit('global-poll-vote', { pollId: globalPoll.pollId, optionIndex: 1 });
+  assert.equal((await globalPollUpdated)[0].options[1].votes, 1);
+
   const profileUpdated = nextEvent(alice, 'profile-updated');
   alice.emit('profile-update', { avatarUrl: 'https://example.com/alice.png', bio: 'Last survivor standing.' });
   const [profile] = await profileUpdated;
@@ -350,6 +366,11 @@ test('versioned public assets are served without stale caching', async (t) => {
   assert.match(client, /add-global-reaction/);
   assert.match(client, /profile-update/);
   assert.match(client, /data-remove-friend/);
+  assert.match(client, /create-global-poll/);
+  assert.match(client, /global-pin-message/);
+  assert.match(client, /activeChannel === 'direct' \? socialFriends/);
+  assert.match(client, /data-mention=/);
+  assert.match(client, /containsMention/);
   assert.doesNotMatch(client, /Configuración de Nexus/);
 
   const userscript = await fetch(`${url}/nexus-chat.user.js`).then((response) => response.text());

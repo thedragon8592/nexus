@@ -83,6 +83,8 @@ function createNexusServer(options = {}) {
   const roomPolls = new Map();
   const roomPinned = new Map();
   const roomReactions = new Map();
+  const globalPolls = new Map();
+  let globalPinned = null;
   const onlineAccounts = new Map();
   const accountProfiles = new Map();
   const hasDataFileOption = Object.prototype.hasOwnProperty.call(options, 'dataFile');
@@ -296,6 +298,7 @@ function createNexusServer(options = {}) {
         token: issuedToken,
         protocolVersion: 3,
         serverVersion: packageJson.version,
+        globalPinned,
         ...socialSnapshot,
       });
       await refreshFriendPresence(currentAccountId);
@@ -550,6 +553,21 @@ function createNexusServer(options = {}) {
       io.to(currentGame).emit('pinned-message', parsed.value || null);
     });
 
+    socket.on('global-pin-message', (value) => {
+      if (!currentAccountId || !allow('global-pin-message', 2, 30_000)) return;
+      const parsed = readText(value, {
+        name: 'Global pinned message',
+        max: LIMITS.pinnedMessage,
+        allowEmpty: true,
+      });
+      if (!parsed.ok) {
+        protocolError('INVALID_PIN', parsed.error);
+        return;
+      }
+      globalPinned = parsed.value || null;
+      io.emit('global-pinned-message', globalPinned);
+    });
+
     socket.on('typing-start', () => {
       if (!requireJoined() || !allow('typing-start', 8, 10_000)) return;
       socket.to(currentGame).emit('user-typing', { username: currentUsername, typing: true });
@@ -667,6 +685,32 @@ function createNexusServer(options = {}) {
       });
     });
 
+    socket.on('create-global-poll', (payload) => {
+      if (!currentAccountId || !allow('create-global-poll', 2, 60_000)) return;
+      const parsed = readPoll(payload);
+      if (!parsed.ok) {
+        protocolError('INVALID_POLL', parsed.error);
+        return;
+      }
+      if (globalPolls.size >= LIMITS.activePolls) {
+        protocolError('POLL_LIMIT', 'Global chat has too many active polls.');
+        return;
+      }
+      const pollId = crypto.randomUUID();
+      const poll = {
+        id: pollId,
+        question: parsed.value.question,
+        options: parsed.value.options.map((option) => ({ option, votes: 0 })),
+        votes: new Map(),
+      };
+      globalPolls.set(pollId, poll);
+      io.emit('global-poll-created', {
+        pollId,
+        question: poll.question,
+        options: poll.options,
+      });
+    });
+
     socket.on('poll-vote', (payload) => {
       if (!requireJoined() || !allow('poll-vote', 8, 10_000)) return;
       if (!payload || typeof payload.pollId !== 'string' || !Number.isInteger(payload.optionIndex)) {
@@ -684,6 +728,28 @@ function createNexusServer(options = {}) {
       poll.votes.set(socket.id, payload.optionIndex);
       poll.options[payload.optionIndex].votes += 1;
       io.to(currentGame).emit('poll-update', {
+        pollId: poll.id,
+        options: poll.options.map(({ option, votes }) => ({ option, votes })),
+      });
+    });
+
+    socket.on('global-poll-vote', (payload) => {
+      if (!currentAccountId || !allow('global-poll-vote', 8, 10_000)) return;
+      if (!payload || typeof payload.pollId !== 'string' || !Number.isInteger(payload.optionIndex)) {
+        protocolError('INVALID_VOTE', 'Global poll vote is invalid.');
+        return;
+      }
+      const poll = globalPolls.get(payload.pollId);
+      if (!poll || payload.optionIndex < 0 || payload.optionIndex >= poll.options.length) {
+        protocolError('INVALID_VOTE', 'Global poll or option does not exist.');
+        return;
+      }
+      if (poll.votes.has(currentAccountId)) {
+        poll.options[poll.votes.get(currentAccountId)].votes -= 1;
+      }
+      poll.votes.set(currentAccountId, payload.optionIndex);
+      poll.options[payload.optionIndex].votes += 1;
+      io.emit('global-poll-update', {
         pollId: poll.id,
         options: poll.options.map(({ option, votes }) => ({ option, votes })),
       });
@@ -719,6 +785,7 @@ function createNexusServer(options = {}) {
       roomPolls,
       roomPinned,
       roomReactions,
+      globalPolls,
       onlineAccounts,
       accountProfiles,
       socialStore,

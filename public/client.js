@@ -100,6 +100,10 @@
     }
     function escapeHtml(str) { const div = document.createElement('div'); div.textContent = str; return div.innerHTML; }
     function escapeRegex(str) { return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+    function containsMention(text, name) {
+        if (!text || !name) return false;
+        return new RegExp(`(^|\\s)@${escapeRegex(name)}(?=\\s|$|[.,!?;:])`, 'i').test(text);
+    }
     function readStoredJson(key, fallback) {
         try {
             const value = JSON.parse(localStorage.getItem(key) || 'null');
@@ -268,6 +272,9 @@
     let socialRequests = [];
     let globalUsers = [];
     let globalMessageHistory = [];
+    let globalNotices = [];
+    const channelPolls = { game: new Map(), global: new Map() };
+    const pinnedMessages = { game: null, global: null };
     const directMessageHistory = new Map();
     const socialUnread = new Map();
     const profileCache = new Map();
@@ -476,27 +483,18 @@
                 });
             });
             chatSocket.on('pinned-message', (text) => {
-                const oldPin = document.querySelector('.pinned-msg:not(.kill-leader)');
-                if (oldPin) oldPin.remove();
-                if (!text) return;
-                const pinDiv = document.createElement('div');
-                pinDiv.className = 'pinned-msg';
-                pinDiv.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 17l-6 6v-12l-6-6h24l-6 6v12l-6-6z"/></svg>`;
-                const pinText = document.createElement('span');
-                pinText.textContent = text;
-                pinDiv.appendChild(pinText);
-                if (killLeaderElement && killLeaderElement.nextSibling) {
-                    messageArea.insertBefore(pinDiv, killLeaderElement.nextSibling);
-                } else {
-                    messageArea.prepend(pinDiv);
-                }
+                pinnedMessages.game = text || null;
+                if (activeChannel === 'game') renderChannelPin('game');
+            });
+            chatSocket.on('global-pinned-message', (text) => {
+                pinnedMessages.global = text || null;
+                if (activeChannel === 'global') renderChannelPin('global');
             });
             chatSocket.on('chat-message', (payload) => {
                 const author = payload.author;
                 cacheProfile(payload.profile);
                 const isBlocked = isUserBlocked(payload.authorId, author) && author !== username;
-                const mentionPattern = new RegExp(`@${escapeRegex(username)}\\b`, 'i');
-                const mentioned = !isBlocked && (author !== username) && mentionPattern.test(payload.text);
+                const mentioned = !isBlocked && (author !== username) && containsMention(payload.text, username);
                 if (mentioned) {
                     playSound('mention');
                     totalMentionsThisGame++;
@@ -522,6 +520,7 @@
                     persistSocialToken(socialToken);
                 }
                 socialProfile = cacheProfile(session.profile);
+                pinnedMessages.global = session.globalPinned || null;
                 socialFriends = Array.isArray(session.friends) ? session.friends.map(cacheProfile) : [];
                 socialRequests = Array.isArray(session.requests)
                     ? session.requests.map((request) => ({ ...request, from: cacheProfile(request.from) }))
@@ -557,7 +556,7 @@
                 if (!globalMessageHistory.some((item) => item.id === message.id)) globalMessageHistory.push(message);
                 globalMessageHistory = globalMessageHistory.slice(-100);
                 const mentioned = message.authorId !== socialProfile?.id
-                    && new RegExp(`@${escapeRegex(username)}\\b`, 'i').test(message.text || '');
+                    && containsMention(message.text, username);
                 if (mentioned && !isUserBlocked(message.authorId, message.author)) playSound('mention');
                 if (activeChannel === 'global' && isChatOpen && !isDim) renderSocialMessage(message, false);
                 else if (message.authorId !== socialProfile?.id && !isUserBlocked(message.authorId, message.author)) incrementSocialUnread('global');
@@ -570,7 +569,7 @@
             });
             chatSocket.on('global-online-list', (users) => {
                 const names = (users || []).map((user) => typeof user === 'string' ? user : user.username);
-                addSystemMessage(`Global online: ${names.join(', ') || 'Nobody else is online.'}`);
+                addChannelNotice(`Global online: ${names.join(', ') || 'Nobody else is online.'}`, 'global');
             });
             chatSocket.on('direct-history', ({ friendId, messages }) => {
                 directMessageHistory.set(friendId, Array.isArray(messages) ? messages : []);
@@ -610,7 +609,7 @@
                 if (onlineCount) onlineCount.textContent = users.length;
                 if (isInputFocused) onInputChange();
             });
-            chatSocket.on('online-list', (users) => addSystemMessage(`Online: ${(users || []).map((user) => typeof user === 'string' ? user : user.username).join(', ')}`));
+            chatSocket.on('online-list', (users) => addChannelNotice(`Match online: ${(users || []).map((user) => typeof user === 'string' ? user : user.username).join(', ') || 'Nobody else is online.'}`, 'game'));
             chatSocket.on('reaction-update', ({ messageId, emoji, count }) => {
                 const msgDiv = messageArea?.querySelector(`.user-msg[data-msgid="${CSS.escape(messageId)}"]`);
                 if (msgDiv) {
@@ -642,14 +641,10 @@
                 updateTypingUser(update.channel, key, update.username, update.typing, update.userId);
                 updateTypingIndicator();
             });
-            chatSocket.on('poll-created', ({ pollId, question, options }) => renderPoll(pollId, question, options));
-            chatSocket.on('poll-update', ({ pollId, options }) => {
-                const pollDiv = messageArea?.querySelector(`.poll-container[data-pollid="${pollId}"]`);
-                if (pollDiv) {
-                    const btns = pollDiv.querySelectorAll('.poll-option');
-                    btns.forEach((btn, idx) => { btn.textContent = `${options[idx].option} (${options[idx].votes})`; });
-                }
-            });
+            chatSocket.on('poll-created', (poll) => storePoll('game', poll));
+            chatSocket.on('poll-update', (poll) => updatePoll('game', poll));
+            chatSocket.on('global-poll-created', (poll) => storePoll('global', poll));
+            chatSocket.on('global-poll-update', (poll) => updatePoll('global', poll));
         } catch(e) { console.error('[NexusChat]', e); }
     }
 
@@ -790,17 +785,60 @@
         }
     }
 
-    function renderPoll(pollId, question, options) {
+    function renderChannelPin(channel) {
+        if (!messageArea || activeChannel !== channel) return;
+        messageArea.querySelectorAll('.pinned-msg:not(.kill-leader)').forEach((element) => element.remove());
+        const text = pinnedMessages[channel];
+        if (!text) return;
+        const pinDiv = document.createElement('div');
+        pinDiv.className = 'pinned-msg';
+        pinDiv.dataset.channel = channel;
+        pinDiv.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 17l-6 6v-12l-6-6h24l-6 6v12l-6-6z"/></svg>`;
+        const pinText = document.createElement('span');
+        pinText.textContent = text;
+        pinDiv.appendChild(pinText);
+        messageArea.prepend(pinDiv);
+    }
+
+    function storePoll(channel, poll) {
+        if (!poll || !poll.pollId) return;
+        channelPolls[channel].set(poll.pollId, {
+            pollId: poll.pollId,
+            question: poll.question,
+            options: Array.isArray(poll.options) ? poll.options : [],
+        });
+        if (activeChannel === channel) renderPoll(poll.pollId, poll.question, poll.options, channel);
+    }
+
+    function updatePoll(channel, poll) {
+        if (!poll || !poll.pollId) return;
+        const current = channelPolls[channel].get(poll.pollId);
+        if (current) current.options = Array.isArray(poll.options) ? poll.options : current.options;
+        const pollDiv = activeChannel === channel
+            ? messageArea?.querySelector(`.poll-container[data-channel="${channel}"][data-pollid="${CSS.escape(poll.pollId)}"]`)
+            : null;
+        if (!pollDiv) return;
+        const buttons = pollDiv.querySelectorAll('.poll-option');
+        buttons.forEach((button, index) => {
+            if (poll.options[index]) button.textContent = `${poll.options[index].option} (${poll.options[index].votes})`;
+        });
+    }
+
+    function renderPoll(pollId, question, options, channel = 'game') {
+        if (activeChannel !== channel) return;
         const div = document.createElement('div');
         div.className = 'poll-container';
         div.setAttribute('data-pollid', pollId);
+        div.setAttribute('data-channel', channel);
         div.innerHTML = `<div class="poll-question"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg> ${escapeHtml(question)}</div>`;
         options.forEach((opt, idx) => {
             const btn = document.createElement('button');
             btn.className = 'poll-option';
             btn.textContent = `${opt.option} (${opt.votes})`;
             btn.addEventListener('click', () => {
-                if (chatSocket && chatSocket.connected) chatSocket.emit('poll-vote', { pollId, optionIndex: idx });
+                if (chatSocket && chatSocket.connected) {
+                    chatSocket.emit(channel === 'global' ? 'global-poll-vote' : 'poll-vote', { pollId, optionIndex: idx });
+                }
             });
             div.appendChild(btn);
         });
@@ -827,13 +865,25 @@
         setTimeout(() => div.remove(), 3000);
     }
 
-    function addChannelNotice(text) {
+    function appendChannelNotice(text) {
         if (!messageArea) return;
         const div = document.createElement('div');
         div.className = 'system-msg channel-notice';
         div.textContent = text;
         messageArea.appendChild(div);
         scrollToBottom();
+    }
+
+    function addChannelNotice(text, channel = activeChannel) {
+        if (channel === 'game') {
+            addSystemMessage(text);
+            return;
+        }
+        if (channel === 'global') {
+            globalNotices.push(text);
+            globalNotices = globalNotices.slice(-20);
+        }
+        if (activeChannel === channel) appendChannelNotice(text);
     }
 
     function typingPayload(typing) {
@@ -1103,12 +1153,22 @@
             if (title) title.textContent = 'Global';
             if (subtitle) subtitle.textContent = 'Everyone connected to Nexus';
             globalMessageHistory.slice(-renderLimit).forEach((message) => renderSocialMessage(message, false));
+            globalNotices.forEach(appendChannelNotice);
             inputField.placeholder = 'Message #global';
         } else if (selectedFriend) {
             if (title) title.textContent = selectedFriend.username;
             if (subtitle) subtitle.textContent = selectedFriend.online ? 'Online now' : 'Offline · messages are saved';
             (directMessageHistory.get(selectedFriend.id) || []).slice(-renderLimit).forEach((message) => renderSocialMessage(message, true));
             inputField.placeholder = `Message ${selectedFriend.username}`;
+        }
+        if (activeChannel === 'game' || activeChannel === 'global') {
+            channelPolls[activeChannel].forEach((poll) => renderPoll(
+                poll.pollId,
+                poll.question,
+                poll.options,
+                activeChannel,
+            ));
+            renderChannelPin(activeChannel);
         }
         const typing = document.getElementById('nx-typing');
         if (typing) typing.style.display = '';
@@ -1136,11 +1196,27 @@
         }
         if (activeChannel === 'global') {
             if (text === '/help') {
-                addChannelNotice('Global commands: /online, /help, /me action, and (name) private message. Use @name to mention someone.');
+                addChannelNotice('Global commands: /online, /help, /poll, /pin, /stats, /me action, and (name) private message. Use @ to mention someone.', 'global');
                 inputField.value = ''; inputField.focus(); return;
             }
             if (text === '/online') {
                 chatSocket.emit('request-global-online'); inputField.value = ''; inputField.focus(); return;
+            }
+            if (text === '/stats') {
+                addChannelNotice(`Global: ${globalMessageHistory.length} recent messages and ${globalUsers.length} users online.`, 'global');
+                inputField.value = ''; inputField.focus(); return;
+            }
+            if (text === '/pin' || text.startsWith('/pin ')) {
+                chatSocket.emit('global-pin-message', text.slice(4).trim());
+                inputField.value = ''; inputField.focus(); return;
+            }
+            if (text.startsWith('/poll')) {
+                const args = text.match(/"([^"]+)"/g);
+                if (args && args.length >= 3) {
+                    chatSocket.emit('create-global-poll', { question: args[0].slice(1, -1), options: args.slice(1).map((item) => item.slice(1, -1)) });
+                    inputField.value = ''; inputField.focus(); return;
+                }
+                showError('Usage: /poll "q" "opt1" "opt2"'); return;
             }
             if (text.startsWith('/me ')) text = `* ${username} ${text.slice(4)}`;
             if (!text || text.length > 250) { if (text.length > 250) showError('Max 250 chars'); return; }
@@ -1161,18 +1237,18 @@
             return;
         }
         if (text === '/help') {
-            addChannelNotice('Match commands: /online, /help, /poll, /pin, /stats, /me action, and (name) private message. Use @name to mention someone.');
+            addChannelNotice('Match commands: /online, /help, /poll, /pin, /stats, /me action, and (name) private message. Use @ to mention someone.', 'game');
             inputField.value = ''; inputField.focus(); return;
         }
         if (text === '/stats') {
             addSystemMessage(`📊 This game: ${totalMessagesThisGame} msgs, ${totalMentionsThisGame} mentions.`);
             inputField.value = ''; inputField.focus(); return;
         }
-        if (text.startsWith('/pin ')) {
-            chatSocket.emit('pin-message', text.slice(5).trim());
+        if (text === '/pin' || text.startsWith('/pin ')) {
+            chatSocket.emit('pin-message', text.slice(4).trim());
             inputField.value = ''; inputField.focus(); return;
         }
-        if (text.startsWith('/poll ')) {
+        if (text.startsWith('/poll')) {
             const args = text.match(/"([^"]+)"/g);
             if (args && args.length >= 3) {
                 chatSocket.emit('create-poll', { question: args[0].slice(1,-1), options: args.slice(1).map(s=>s.slice(1,-1)) });
@@ -1748,6 +1824,11 @@
             }
             #nx-autocomplete div { padding: 4px 8px; cursor: pointer; color: #e0e0e0; }
             #nx-autocomplete div:hover { background: #444; }
+            #nx-autocomplete .nx-autocomplete-option { width:100%; border:0; background:transparent; color:var(--nx-text); padding:7px 9px; display:flex; align-items:center; gap:8px; text-align:left; cursor:pointer; }
+            #nx-autocomplete .nx-autocomplete-option:hover { background:color-mix(in srgb,var(--nx-accent) 13%,transparent); }
+            #nx-autocomplete .nx-mention-option > span:last-child { min-width:0; display:grid; gap:1px; }
+            #nx-autocomplete .nx-mention-option b { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--nx-accent); }
+            #nx-autocomplete .nx-mention-option small { margin:0; color:var(--nx-text-secondary); font-size:9px; }
             @media (max-width: 680px) {
                 #nx-chat { left: 8px !important; right: 8px !important; bottom: 8px !important; width: calc(100vw - 16px) !important; height: min(560px, calc(100vh - 16px)) !important; }
                 #nx-sidebar { width: 190px; flex-basis: 190px; }
@@ -1830,7 +1911,16 @@
         document.getElementById('nx-mention-badge').addEventListener('click', () => { mentionCount = 0; updateBadges(); scrollToBottom(false); });
         document.getElementById('nx-unread-badge').addEventListener('click', () => { unreadCount = 0; updateBadges(); scrollToBottom(false); });
         sendBtn.addEventListener('click', sendMessage);
-        inputField.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sendMessage(); } });
+        inputField.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            const autocomplete = document.getElementById('nx-autocomplete');
+            const firstOption = autocomplete.style.display === 'block'
+                ? autocomplete.querySelector('.nx-autocomplete-option, div')
+                : null;
+            if (firstOption) firstOption.click();
+            else sendMessage();
+        });
         inputField.addEventListener('input', () => {
             if (!chatSocket || !chatSocket.connected) return;
             if (inputField.value.length > 0) {
@@ -1858,7 +1948,7 @@
 
         document.addEventListener('keydown', (e) => {
             if (!isInputFocused) return;
-            if (e.key === 'Tab') { e.preventDefault(); const ac = document.getElementById('nx-autocomplete'); if (ac.style.display === 'block') { const first = ac.querySelector('div'); if (first) first.click(); } }
+            if (e.key === 'Tab') { e.preventDefault(); const ac = document.getElementById('nx-autocomplete'); if (ac.style.display === 'block') { const first = ac.querySelector('.nx-autocomplete-option, div'); if (first) first.click(); } }
             else if (e.key === 'Escape') { e.preventDefault(); inputField.blur(); if (isChatOpen) closeChat(); }
             else if (e.key === 'ArrowUp') { e.preventDefault(); const ownMsgs = messageHistory.filter(m => m.author === username && m.text); if (ownMsgs.length > 0) inputField.value = ownMsgs[ownMsgs.length-1].text; }
             else if (e.key === 'ArrowDown') { e.preventDefault(); inputField.value = ''; }
@@ -2080,21 +2170,30 @@
         messageArea.appendChild(div); scrollToBottom();
     }
 
+    function getMentionCandidates() {
+        const source = activeChannel === 'global'
+            ? globalUsers
+            : (activeChannel === 'direct' ? socialFriends : (window.__nexusOnlineUsers || []));
+        const seen = new Set();
+        return source
+            .map((person) => typeof person === 'string' ? { username: person } : person)
+            .filter((person) => {
+                const normalized = String(person?.username || '').trim().toLocaleLowerCase();
+                if (!normalized || normalized === username.trim().toLocaleLowerCase() || seen.has(normalized)) return false;
+                seen.add(normalized);
+                return true;
+            })
+            .sort((first, second) => first.username.localeCompare(second.username));
+    }
+
     function onInputChange() {
         const val = inputField.value;
         const cursorPos = inputField.selectionStart;
         const textBefore = val.slice(0, cursorPos);
         const autocomplete = document.getElementById('nx-autocomplete');
-        if (activeChannel === 'direct') {
-            autocomplete.style.display = 'none';
-            return;
-        }
-        if (textBefore.startsWith('/') && !textBefore.includes(' ')) {
+        if (activeChannel !== 'direct' && textBefore.startsWith('/') && !textBefore.includes(' ')) {
             const partial = textBefore.slice(1).toLowerCase();
-            const commands = activeChannel === 'global' ? [
-                { name: '/help', desc: 'Show global help' }, { name: '/online', desc: 'List global users' },
-                { name: '/me', desc: 'Roleplay action' }
-            ] : [
+            const commands = [
                 { name: '/help', desc: 'Show help' }, { name: '/online', desc: 'List online players' },
                 { name: '/poll', desc: 'Create poll' }, { name: '/pin', desc: 'Pin a message' },
                 { name: '/stats', desc: 'Your statistics' }, { name: '/me', desc: 'Roleplay action' }
@@ -2107,15 +2206,25 @@
             } else autocomplete.style.display = 'none';
             return;
         }
-        const match = textBefore.match(/@(\w*)$/);
+        const match = textBefore.match(/(^|\s)@([^@\r\n]*)$/);
         if (match) {
-            const partial = match[1].toLowerCase();
-            const users = activeChannel === 'global' ? globalUsers : (window.__nexusOnlineUsers || []);
-            const filtered = users.filter((user) => user.username?.toLowerCase().startsWith(partial) && user.username !== username);
+            const partial = match[2].toLocaleLowerCase();
+            const filtered = getMentionCandidates().filter((person) => person.username.toLocaleLowerCase().startsWith(partial));
             if (filtered.length > 0) {
-                autocomplete.innerHTML = filtered.map((user) => `<div>@${escapeHtml(user.username)}</div>`).join('');
+                autocomplete.innerHTML = filtered.map((person) => `<button type="button" class="nx-autocomplete-option nx-mention-option" data-mention="${escapeHtml(person.username)}">${avatarMarkup(person, 'nx-avatar nx-avatar-small')}<span><b>@${escapeHtml(person.username)}</b><small>${activeChannel === 'direct' ? 'Friend' : (person.online === false ? 'Offline' : 'Online')}</small></span></button>`).join('');
                 autocomplete.style.display = 'block';
-                autocomplete.onclick = (ev) => { if (ev.target.tagName === 'DIV') { const name = ev.target.textContent.slice(1); inputField.value = val.slice(0, match.index) + '@' + name + ' ' + val.slice(cursorPos); inputField.focus(); autocomplete.style.display = 'none'; } };
+                autocomplete.onclick = (event) => {
+                    const option = event.target.closest('[data-mention]');
+                    if (!option) return;
+                    const mentionStart = cursorPos - match[2].length - 1;
+                    const before = val.slice(0, mentionStart);
+                    const after = val.slice(cursorPos);
+                    inputField.value = `${before}@${option.dataset.mention} ${after}`;
+                    const nextCursor = before.length + option.dataset.mention.length + 2;
+                    inputField.focus();
+                    inputField.setSelectionRange(nextCursor, nextCursor);
+                    autocomplete.style.display = 'none';
+                };
             } else autocomplete.style.display = 'none';
         } else autocomplete.style.display = 'none';
     }
