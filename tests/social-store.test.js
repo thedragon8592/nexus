@@ -12,6 +12,8 @@ test('social data survives a store restart without persisting raw access tokens'
 
   const first = new SocialStore(filePath);
   const registration = await first.register('PersistentPlayer');
+  const publicProfile = await first.updateUsername(registration.user.id, 'PersistentPlayer');
+  assert.equal(publicProfile.tokenHash, undefined);
   await first.addGlobalMessage(registration.user.id, 'saved message');
 
   const raw = fs.readFileSync(filePath, 'utf8');

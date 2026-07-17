@@ -2,7 +2,7 @@
 // @name         Nexus Chat
 // @namespace    https://nexus-chat-free.onrender.com/
 // @icon         https://i.ibb.co/FkXVWJnC/Chat-GPT-Image-26-jun-2026-19-06-21.png
-// @version      3.2.1
+// @version      3.3.0
 // @description  Nexus ID, global chat, friends and direct messages for Resurviv and Survev.
 // @author       ! System
 // @license      MIT
@@ -63,7 +63,7 @@
         const savedToken = await GM.getValue(TOKEN_KEY, '');
         const [socketIoCode, clientCode] = await Promise.all([
             requestText(`${SERVER}/socket.io/socket.io.js?v=4.7.2`),
-            requestText(`${SERVER}/client.js?v=3.2.1`)
+            requestText(`${SERVER}/client.js?v=3.3.0`)
         ]);
         const script = document.createElement('script');
         script.textContent = `window.__NEXUS_BOOTSTRAP__=${JSON.stringify({ socialToken: savedToken, serverUrl: SERVER })};\n${socketIoCode}\n${clientCode}`;

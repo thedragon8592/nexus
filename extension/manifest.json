@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "Nexus Chat",
+  "version": "3.3.0",
+  "description": "In-game real-time chat overlay for resurviv.biz and survev.io",
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://resurviv.biz/*",
+        "*://*.resurviv.biz/*",
+        "*://survev.io/*",
+        "*://*.survev.io/*"
+      ],
+      "js": [
+        "socket.io.min.js",
+        "nexus-chat.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "host_permissions": [
+    "https://nexus-chat-free.onrender.com/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "interceptor.js"
+      ],
+      "matches": [
+        "*://resurviv.biz/*",
+        "*://*.resurviv.biz/*",
+        "*://survev.io/*",
+        "*://*.survev.io/*"
+      ]
+    }
+  ]
+}

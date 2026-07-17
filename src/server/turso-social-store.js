@@ -17,6 +17,8 @@ function publicUser(row) {
     id: String(row.id),
     username: String(row.username),
     friendCode: String(row.friend_code),
+    avatarUrl: String(row.avatar_url || ''),
+    bio: String(row.bio || ''),
     createdAt: Number(row.created_at),
   };
 }
@@ -42,6 +44,8 @@ class TursoSocialStore {
         username TEXT NOT NULL,
         friend_code TEXT NOT NULL UNIQUE,
         token_hash TEXT NOT NULL UNIQUE,
+        avatar_url TEXT NOT NULL DEFAULT '',
+        bio TEXT NOT NULL DEFAULT '',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )`,
@@ -75,12 +79,28 @@ class TursoSocialStore {
         text TEXT NOT NULL,
         timestamp INTEGER NOT NULL
       )`,
+      `CREATE TABLE IF NOT EXISTS global_message_reactions (
+        message_id TEXT NOT NULL,
+        emoji TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (message_id, emoji, user_id)
+      )`,
       'CREATE INDEX IF NOT EXISTS idx_friendships_user ON friendships(user_id)',
       'CREATE INDEX IF NOT EXISTS idx_requests_recipient ON friend_requests(to_id, status, created_at)',
       'CREATE INDEX IF NOT EXISTS idx_requests_pair ON friend_requests(from_id, to_id, status)',
       'CREATE INDEX IF NOT EXISTS idx_global_messages_time ON global_messages(timestamp)',
       'CREATE INDEX IF NOT EXISTS idx_direct_messages_conversation ON direct_messages(conversation_key, timestamp)',
+      'CREATE INDEX IF NOT EXISTS idx_global_reactions_message ON global_message_reactions(message_id)',
     ], 'write');
+    const userColumns = await this.client.execute('PRAGMA table_info(users)');
+    const columnNames = new Set(userColumns.rows.map((row) => String(row.name)));
+    if (!columnNames.has('avatar_url')) {
+      await this.client.execute("ALTER TABLE users ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''");
+    }
+    if (!columnNames.has('bio')) {
+      await this.client.execute("ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''");
+    }
   }
 
   async findById(userId, executor = this.client) {
@@ -134,7 +154,7 @@ class TursoSocialStore {
     });
     return {
       token,
-      user: { id: identity.id, username, friendCode, createdAt: now },
+      user: { id: identity.id, username, friendCode, avatarUrl: '', bio: '', createdAt: now },
     };
   }
 
@@ -157,6 +177,15 @@ class TursoSocialStore {
     return publicUser(await this.findById(userId));
   }
 
+  async updateProfile(userId, profile) {
+    await this.ready;
+    await this.client.execute({
+      sql: 'UPDATE users SET avatar_url = ?, bio = ?, updated_at = ? WHERE id = ?',
+      args: [profile.avatarUrl || '', profile.bio || '', Date.now(), userId],
+    });
+    return publicUser(await this.findById(userId));
+  }
+
   async friendIds(userId) {
     await this.ready;
     const result = await this.client.execute({
@@ -168,7 +197,7 @@ class TursoSocialStore {
 
   async snapshot(userId, onlineIds = new Set()) {
     await this.ready;
-    const [userRow, friendsResult, requestsResult, globalResult] = await Promise.all([
+    const [userRow, friendsResult, requestsResult, globalResult, reactionResult] = await Promise.all([
       this.findById(userId),
       this.client.execute({
         sql: `SELECT u.* FROM friendships f
@@ -178,7 +207,8 @@ class TursoSocialStore {
       }),
       this.client.execute({
         sql: `SELECT r.id, r.created_at, u.id AS from_id, u.username AS from_username,
-                     u.friend_code AS from_friend_code, u.created_at AS from_created_at
+                     u.friend_code AS from_friend_code, u.avatar_url AS from_avatar_url,
+                     u.bio AS from_bio, u.created_at AS from_created_at
               FROM friend_requests r
               JOIN users u ON u.id = r.from_id
               WHERE r.to_id = ? AND r.status = 'pending'
@@ -186,8 +216,18 @@ class TursoSocialStore {
         args: [userId],
       }),
       this.client.execute({
-        sql: `SELECT id, author_id, author, text, timestamp FROM global_messages
-              ORDER BY timestamp DESC, rowid DESC LIMIT ?`,
+        sql: `SELECT m.id, m.author_id, m.author, m.text, m.timestamp,
+                     u.username AS profile_username, u.friend_code AS profile_friend_code,
+                     u.avatar_url AS profile_avatar_url, u.bio AS profile_bio,
+                     u.created_at AS profile_created_at
+              FROM global_messages m LEFT JOIN users u ON u.id = m.author_id
+              ORDER BY m.timestamp DESC, m.rowid DESC LIMIT ?`,
+        args: [MAX_GLOBAL_HISTORY],
+      }),
+      this.client.execute({
+        sql: `SELECT message_id, emoji, COUNT(*) AS total FROM global_message_reactions
+              WHERE message_id IN (SELECT id FROM global_messages ORDER BY timestamp DESC, rowid DESC LIMIT ?)
+              GROUP BY message_id, emoji`,
         args: [MAX_GLOBAL_HISTORY],
       }),
     ]);
@@ -202,17 +242,38 @@ class TursoSocialStore {
         id: String(row.from_id),
         username: String(row.from_username),
         friendCode: String(row.from_friend_code),
+        avatarUrl: String(row.from_avatar_url || ''),
+        bio: String(row.from_bio || ''),
         createdAt: Number(row.from_created_at),
       },
       createdAt: Number(row.created_at),
     }));
-    const globalHistory = globalResult.rows.reverse().map((row) => ({
-      id: String(row.id),
-      authorId: String(row.author_id),
-      author: String(row.author),
-      text: String(row.text),
-      timestamp: Number(row.timestamp),
-    }));
+    const reactionsByMessage = new Map();
+    reactionResult.rows.forEach((row) => {
+      const messageId = String(row.message_id);
+      const reactions = reactionsByMessage.get(messageId) || {};
+      reactions[String(row.emoji)] = Number(row.total);
+      reactionsByMessage.set(messageId, reactions);
+    });
+    const globalHistory = globalResult.rows.reverse().map((row) => {
+      const profile = row.profile_username ? {
+        id: String(row.author_id),
+        username: String(row.profile_username),
+        friendCode: String(row.profile_friend_code),
+        avatarUrl: String(row.profile_avatar_url || ''),
+        bio: String(row.profile_bio || ''),
+        createdAt: Number(row.profile_created_at),
+      } : null;
+      return {
+        id: String(row.id),
+        authorId: String(row.author_id),
+        author: profile?.username || String(row.author),
+        text: String(row.text),
+        timestamp: Number(row.timestamp),
+        profile,
+        reactions: reactionsByMessage.get(String(row.id)) || {},
+      };
+    });
     return { profile: publicUser(userRow), friends, requests, globalHistory };
   }
 
@@ -307,12 +368,39 @@ class TursoSocialStore {
     }
   }
 
+  async removeFriend(userId, friendId) {
+    await this.ready;
+    const transaction = await this.client.transaction('write');
+    try {
+      const friendship = await transaction.execute({
+        sql: 'SELECT 1 FROM friendships WHERE user_id = ? AND friend_id = ? LIMIT 1',
+        args: [userId, friendId],
+      });
+      if (!friendship.rows.length) {
+        await transaction.rollback();
+        return { ok: false, code: 'FRIEND_NOT_FOUND', error: 'This user is not in your friends list.' };
+      }
+      const friend = await this.findById(friendId, transaction);
+      await transaction.execute({
+        sql: `DELETE FROM friendships WHERE (user_id = ? AND friend_id = ?)
+              OR (user_id = ? AND friend_id = ?)`,
+        args: [userId, friendId, friendId, userId],
+      });
+      await transaction.commit();
+      return { ok: true, friend: publicUser(friend) };
+    } catch (error) {
+      try { await transaction.rollback(); } catch (_) {}
+      throw error;
+    }
+  }
+
   async addGlobalMessage(userId, text) {
     await this.ready;
     const user = await this.findById(userId);
     if (!user) return null;
     const message = {
       id: crypto.randomUUID(), authorId: userId, author: String(user.username), text, timestamp: Date.now(),
+      profile: publicUser(user), reactions: {},
     };
     await this.client.batch([
       {
@@ -325,8 +413,31 @@ class TursoSocialStore {
               (SELECT id FROM global_messages ORDER BY timestamp DESC, rowid DESC LIMIT ?)`,
         args: [MAX_GLOBAL_HISTORY],
       },
+      {
+        sql: 'DELETE FROM global_message_reactions WHERE message_id NOT IN (SELECT id FROM global_messages)',
+        args: [],
+      },
     ], 'write');
     return message;
+  }
+
+  async addGlobalReaction(userId, messageId, emoji) {
+    await this.ready;
+    const message = await this.client.execute({
+      sql: 'SELECT 1 FROM global_messages WHERE id = ? LIMIT 1',
+      args: [messageId],
+    });
+    if (!message.rows.length || !(await this.findById(userId))) return null;
+    await this.client.execute({
+      sql: `INSERT OR IGNORE INTO global_message_reactions (message_id, emoji, user_id, created_at)
+            VALUES (?, ?, ?, ?)`,
+      args: [messageId, emoji, userId, Date.now()],
+    });
+    const result = await this.client.execute({
+      sql: 'SELECT emoji, COUNT(*) AS total FROM global_message_reactions WHERE message_id = ? GROUP BY emoji',
+      args: [messageId],
+    });
+    return Object.fromEntries(result.rows.map((row) => [String(row.emoji), Number(row.total)]));
   }
 
   async directHistory(userId, friendId) {

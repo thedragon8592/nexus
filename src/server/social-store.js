@@ -36,7 +36,14 @@ class SocialStore {
     this.kind = filePath ? 'file' : 'memory';
     this.ready = Promise.resolve();
     this.writeQueue = Promise.resolve();
-    this.data = { version: 1, users: {}, friendRequests: {}, globalMessages: [], directMessages: {} };
+    this.data = {
+      version: 2,
+      users: {},
+      friendRequests: {},
+      globalMessages: [],
+      globalReactions: {},
+      directMessages: {},
+    };
     this.load();
   }
 
@@ -45,12 +52,17 @@ class SocialStore {
     const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
     if (!parsed || typeof parsed !== 'object') throw new Error('Invalid social data file.');
     this.data = {
-      version: 1,
+      version: 2,
       users: parsed.users || {},
       friendRequests: parsed.friendRequests || {},
       globalMessages: Array.isArray(parsed.globalMessages) ? parsed.globalMessages : [],
+      globalReactions: parsed.globalReactions || {},
       directMessages: parsed.directMessages || {},
     };
+    Object.values(this.data.users).forEach((user) => {
+      user.avatarUrl = typeof user.avatarUrl === 'string' ? user.avatarUrl : '';
+      user.bio = typeof user.bio === 'string' ? user.bio : '';
+    });
   }
 
   save() {
@@ -67,7 +79,14 @@ class SocialStore {
   }
 
   publicUser(user) {
-    return { id: user.id, username: user.username, friendCode: user.friendCode, createdAt: user.createdAt };
+    return {
+      id: user.id,
+      username: user.username,
+      friendCode: user.friendCode,
+      avatarUrl: user.avatarUrl || '',
+      bio: user.bio || '',
+      createdAt: user.createdAt,
+    };
   }
 
   findByToken(token) {
@@ -96,7 +115,7 @@ class SocialStore {
     if (existing && existing.tokenHash === hashToken(token)) return { token, user: existing };
     const user = {
       id: identity.id, username, friendCode: this.uniqueFriendCode(identity.friendCode),
-      tokenHash: hashToken(token), friendIds: [], createdAt: Date.now(), updatedAt: Date.now(),
+      tokenHash: hashToken(token), friendIds: [], avatarUrl: '', bio: '', createdAt: Date.now(), updatedAt: Date.now(),
     };
     this.data.users[user.id] = user;
     await this.save();
@@ -106,8 +125,8 @@ class SocialStore {
   async ensureIdentity(token, username) {
     const existing = this.findByToken(token);
     if (existing) {
-      await this.updateUsername(existing.id, username);
-      return { token: null, user: existing, restored: false };
+      const user = await this.updateUsername(existing.id, username);
+      return { token: null, user, restored: false };
     }
     const registration = await this.register(username, token);
     return { ...registration, restored: isAccessToken(token) };
@@ -115,11 +134,27 @@ class SocialStore {
 
   async updateUsername(userId, username) {
     const user = this.data.users[userId];
-    if (!user || user.username === username) return user || null;
+    if (!user) return null;
+    if (user.username === username) return this.publicUser(user);
     user.username = username;
     user.updatedAt = Date.now();
     await this.save();
-    return user;
+    return this.publicUser(user);
+  }
+
+  async updateProfile(userId, profile) {
+    const user = this.data.users[userId];
+    if (!user) return null;
+    user.avatarUrl = profile.avatarUrl || '';
+    user.bio = profile.bio || '';
+    user.updatedAt = Date.now();
+    await this.save();
+    return this.publicUser(user);
+  }
+
+  globalReactionCounts(messageId) {
+    const reactions = this.data.globalReactions[messageId] || {};
+    return Object.fromEntries(Object.entries(reactions).map(([emoji, userIds]) => [emoji, userIds.length]));
   }
 
   snapshot(userId, onlineIds = new Set()) {
@@ -130,7 +165,16 @@ class SocialStore {
     const requests = Object.values(this.data.friendRequests)
       .filter((request) => request.toId === userId && request.status === 'pending')
       .map((request) => ({ id: request.id, from: this.publicUser(this.data.users[request.fromId]), createdAt: request.createdAt }));
-    return { profile: this.publicUser(user), friends, requests, globalHistory: this.data.globalMessages.slice(-MAX_GLOBAL_HISTORY) };
+    const globalHistory = this.data.globalMessages.slice(-MAX_GLOBAL_HISTORY).map((message) => {
+      const author = this.data.users[message.authorId];
+      return {
+        ...message,
+        author: author?.username || message.author,
+        profile: author ? this.publicUser(author) : null,
+        reactions: this.globalReactionCounts(message.id),
+      };
+    });
+    return { profile: this.publicUser(user), friends, requests, globalHistory };
   }
 
   friendIds(userId) {
@@ -169,12 +213,38 @@ class SocialStore {
     return { ok: true, request };
   }
 
+  async removeFriend(userId, friendId) {
+    const user = this.data.users[userId];
+    const friend = this.data.users[friendId];
+    if (!user || !friend || !user.friendIds.includes(friendId)) {
+      return { ok: false, code: 'FRIEND_NOT_FOUND', error: 'This user is not in your friends list.' };
+    }
+    user.friendIds = user.friendIds.filter((id) => id !== friendId);
+    friend.friendIds = friend.friendIds.filter((id) => id !== userId);
+    user.updatedAt = Date.now();
+    friend.updatedAt = Date.now();
+    await this.save();
+    return { ok: true, friend: this.publicUser(friend) };
+  }
+
   async addGlobalMessage(userId, text) {
     const user = this.data.users[userId];
     if (!user) return null;
-    const message = { id: crypto.randomUUID(), authorId: user.id, author: user.username, text, timestamp: Date.now() };
+    const message = {
+      id: crypto.randomUUID(),
+      authorId: user.id,
+      author: user.username,
+      text,
+      timestamp: Date.now(),
+      profile: this.publicUser(user),
+      reactions: {},
+    };
     this.data.globalMessages.push(message);
     this.data.globalMessages = this.data.globalMessages.slice(-MAX_GLOBAL_HISTORY);
+    const activeMessageIds = new Set(this.data.globalMessages.map((item) => item.id));
+    Object.keys(this.data.globalReactions).forEach((messageId) => {
+      if (!activeMessageIds.has(messageId)) delete this.data.globalReactions[messageId];
+    });
     await this.save();
     return message;
   }
@@ -198,6 +268,17 @@ class SocialStore {
     this.data.directMessages[key] = history.slice(-MAX_DIRECT_HISTORY);
     await this.save();
     return message;
+  }
+
+  async addGlobalReaction(userId, messageId, emoji) {
+    if (!this.data.users[userId] || !this.data.globalMessages.some((message) => message.id === messageId)) return null;
+    const messageReactions = this.data.globalReactions[messageId] || {};
+    const userIds = messageReactions[emoji] || [];
+    if (!userIds.includes(userId)) userIds.push(userId);
+    messageReactions[emoji] = userIds;
+    this.data.globalReactions[messageId] = messageReactions;
+    await this.save();
+    return this.globalReactionCounts(messageId);
   }
 
   async close() {}

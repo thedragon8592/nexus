@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { io: createClient } = require('socket.io-client');
 const { createNexusServer } = require('../src/server/create-server');
 
@@ -12,6 +14,20 @@ function nextEvent(socket, event, timeout = 1500) {
     function handler(...args) {
       clearTimeout(timer);
       resolve(args);
+    }
+    socket.once(event, handler);
+  });
+}
+
+function expectNoEvent(socket, event, wait = 150) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      socket.off(event, handler);
+      resolve();
+    }, wait);
+    function handler(payload) {
+      clearTimeout(timer);
+      reject(new Error(`Unexpected ${event}: ${JSON.stringify(payload)}`));
     }
     socket.once(event, handler);
   });
@@ -158,8 +174,8 @@ test('social accounts support global chat, friend requests and direct messages',
   const aliceJoin = await join(alice, 'social-game', 'Alice');
   const bobJoin = await join(bob, 'social-game', 'Bob');
 
-  assert.equal(aliceJoin.socialSession.protocolVersion, 2);
-  assert.equal(aliceJoin.socialSession.serverVersion, '3.2.1');
+  assert.equal(aliceJoin.socialSession.protocolVersion, 3);
+  assert.equal(aliceJoin.socialSession.serverVersion, '3.3.0');
   assert.match(aliceJoin.socialSession.profile.friendCode, /^NX-[0-9A-F]{8}$/);
   assert.ok(aliceJoin.socialSession.token);
 
@@ -192,6 +208,108 @@ test('social accounts support global chat, friend requests and direct messages',
   assert.equal((await directHistory)[0].messages[0].text, 'secret hello');
 });
 
+test('profiles, global private messages, reactions, typing and friend removal work together', async (t) => {
+  const nexus = createNexusServer({ dataFile: null });
+  const port = await nexus.start(0);
+  const url = `http://127.0.0.1:${port}`;
+  const clients = [];
+  t.after(async () => {
+    clients.forEach((socket) => socket.disconnect());
+    await nexus.stop();
+  });
+
+  const alice = await createConnectedClient(url);
+  const bob = await createConnectedClient(url);
+  const charlie = await createConnectedClient(url);
+  clients.push(alice, bob, charlie);
+  const aliceJoin = await join(alice, 'social-features', 'Alice');
+  const bobJoin = await join(bob, 'social-features', 'Bob');
+  await join(charlie, 'another-match', 'Charlie');
+
+  const profileUpdated = nextEvent(alice, 'profile-updated');
+  alice.emit('profile-update', { avatarUrl: 'https://example.com/alice.png', bio: 'Last survivor standing.' });
+  const [profile] = await profileUpdated;
+  assert.equal(profile.avatarUrl, 'https://example.com/alice.png');
+  assert.equal(profile.bio, 'Last survivor standing.');
+
+  const globalMessageForAlice = nextEvent(alice, 'global-message');
+  alice.emit('global-message', 'Hello @Bob');
+  const [globalMessage] = await globalMessageForAlice;
+  assert.equal(globalMessage.profile.bio, 'Last survivor standing.');
+
+  const reactionUpdate = nextEvent(alice, 'global-reaction-update');
+  bob.emit('add-global-reaction', { messageId: globalMessage.id, emoji: '🔥' });
+  const [reaction] = await reactionUpdate;
+  assert.equal(reaction.messageId, globalMessage.id);
+  assert.equal(reaction.reactions['🔥'], 1);
+
+  const alicePrivate = nextEvent(alice, 'global-message');
+  const bobPrivate = nextEvent(bob, 'global-message');
+  const charliePrivate = expectNoEvent(charlie, 'global-message');
+  alice.emit('global-private-message', { recipient: 'Bob', text: 'Global secret' });
+  const [[privateEcho], [privateIncoming]] = await Promise.all([alicePrivate, bobPrivate, charliePrivate]);
+  assert.equal(privateEcho.private, true);
+  assert.equal(privateIncoming.recipientId, bobJoin.socialSession.profile.id);
+
+  const typing = nextEvent(bob, 'typing-update');
+  alice.emit('typing-update', { channel: 'global', typing: true });
+  const [typingUpdate] = await typing;
+  assert.equal(typingUpdate.channel, 'global');
+  assert.equal(typingUpdate.userId, aliceJoin.socialSession.profile.id);
+
+  const requestUpdate = nextEvent(bob, 'social-update');
+  alice.emit('friend-request', bobJoin.socialSession.profile.friendCode);
+  const [pending] = await requestUpdate;
+  const aliceFriends = nextEvent(alice, 'social-update');
+  const bobFriends = nextEvent(bob, 'social-update');
+  bob.emit('friend-response', { requestId: pending.requests[0].id, accept: true });
+  await Promise.all([aliceFriends, bobFriends]);
+
+  const aliceRemoved = nextEvent(alice, 'social-update');
+  const bobRemoved = nextEvent(bob, 'social-update');
+  alice.emit('remove-friend', bobJoin.socialSession.profile.id);
+  const [[aliceAfterRemoval], [bobAfterRemoval]] = await Promise.all([aliceRemoved, bobRemoved]);
+  assert.deepEqual(aliceAfterRemoval.friends, []);
+  assert.deepEqual(bobAfterRemoval.friends, []);
+});
+
+test('match reactions are restored in history and typing stays inside the match', async (t) => {
+  const nexus = createNexusServer({ dataFile: null });
+  const port = await nexus.start(0);
+  const url = `http://127.0.0.1:${port}`;
+  const clients = [];
+  t.after(async () => {
+    clients.forEach((socket) => socket.disconnect());
+    await nexus.stop();
+  });
+
+  const alice = await createConnectedClient(url);
+  const bob = await createConnectedClient(url);
+  const outsider = await createConnectedClient(url);
+  clients.push(alice, bob, outsider);
+  await join(alice, 'reaction-match', 'Alice');
+  await join(bob, 'reaction-match', 'Bob');
+  await join(outsider, 'other-match', 'Outsider');
+
+  const incoming = nextEvent(bob, 'chat-message');
+  alice.emit('chat-message', { text: 'React to this' });
+  const [message] = await incoming;
+  const reactionUpdate = nextEvent(alice, 'reaction-update');
+  bob.emit('add-reaction', { messageId: message.messageId, emoji: '👍' });
+  assert.equal((await reactionUpdate)[0].count, 1);
+
+  const newcomer = await createConnectedClient(url);
+  clients.push(newcomer);
+  const newcomerJoin = await join(newcomer, 'reaction-match', 'Newcomer');
+  assert.equal(newcomerJoin.messages[0].reactions['👍'], 1);
+
+  const typing = nextEvent(bob, 'typing-update');
+  const outsiderTyping = expectNoEvent(outsider, 'typing-update');
+  alice.emit('typing-update', { channel: 'game', typing: true });
+  assert.equal((await typing)[0].channel, 'game');
+  await outsiderTyping;
+});
+
 test('versioned public assets are served without stale caching', async (t) => {
   const nexus = createNexusServer({ dataFile: null });
   const port = await nexus.start(0);
@@ -199,7 +317,7 @@ test('versioned public assets are served without stale caching', async (t) => {
   t.after(() => nexus.stop());
 
   const health = await fetch(`${url}/health`).then((response) => response.json());
-  assert.equal(health.version, '3.2.1');
+  assert.equal(health.version, '3.3.0');
 
   for (const path of ['/client.js', '/nexus-chat.user.js', '/nexus-optimizer.user.js']) {
     const response = await fetch(`${url}${path}`);
@@ -209,17 +327,34 @@ test('versioned public assets are served without stale caching', async (t) => {
   }
 
   const client = await fetch(`${url}/client.js`).then((response) => response.text());
-  assert.match(client, /const EXT_VERSION = '3\.2\.1'/);
+  assert.match(client, /const EXT_VERSION = '3\.3\.0'/);
   assert.match(client, /https:\/\/nexus-chat-free\.onrender\.com/);
   assert.match(client, /data-settings-page="diagnostics"/);
   assert.match(client, /theme-ocean/);
   assert.match(client, /theme-ember/);
   assert.match(client, /theme-orchid/);
   assert.match(client, /\^NX-\[0-9A-F\]\{6,8\}\$/);
+  assert.match(client, /global-private-message/);
+  assert.match(client, /add-global-reaction/);
+  assert.match(client, /profile-update/);
+  assert.match(client, /data-remove-friend/);
+  assert.doesNotMatch(client, /Configuración de Nexus/);
 
   const userscript = await fetch(`${url}/nexus-chat.user.js`).then((response) => response.text());
-  assert.match(userscript, /@version\s+3\.2\.1/);
+  assert.match(userscript, /@version\s+3\.3\.0/);
   assert.match(userscript, /nexus-chat-free\.onrender\.com/);
   assert.match(userscript, /nx-bootstrap-loader/);
   assert.doesNotMatch(userscript, /overlay\.id = 'nx-game-loader'/);
+});
+
+test('the packaged browser extension is synchronized with the web client', () => {
+  const projectRoot = path.resolve(__dirname, '..');
+  const client = fs.readFileSync(path.join(projectRoot, 'public', 'client.js'), 'utf8');
+  const extensionClient = fs.readFileSync(path.join(projectRoot, 'extension', 'nexus-chat.js'), 'utf8');
+  const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, 'extension', 'manifest.json'), 'utf8'));
+  assert.equal(extensionClient, client);
+  assert.equal(manifest.version, '3.3.0');
+  assert.deepEqual(manifest.host_permissions, ['https://nexus-chat-free.onrender.com/*']);
+  assert.ok(fs.existsSync(path.join(projectRoot, 'extension', 'interceptor.js')));
+  assert.ok(fs.existsSync(path.join(projectRoot, 'extension', 'socket.io.min.js')));
 });

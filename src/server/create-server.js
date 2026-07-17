@@ -14,6 +14,7 @@ const {
   readFriendCode,
   readGameId,
   readPoll,
+  readProfile,
   readText,
   readUsername,
 } = require('./validation');
@@ -83,6 +84,7 @@ function createNexusServer(options = {}) {
   const roomPinned = new Map();
   const roomReactions = new Map();
   const onlineAccounts = new Map();
+  const accountProfiles = new Map();
   const hasDataFileOption = Object.prototype.hasOwnProperty.call(options, 'dataFile');
   const dataFile = hasDataFileOption
     ? options.dataFile
@@ -122,7 +124,23 @@ function createNexusServer(options = {}) {
 
   function getUserList(gameId) {
     const room = rooms.get(gameId);
-    return room ? Array.from(room.values(), (entry) => entry.username) : [];
+    return room ? Array.from(room.values(), (entry) => ({
+      id: entry.accountId || `socket:${entry.socketId || entry.username}`,
+      username: entry.username,
+      friendCode: entry.profile?.friendCode || '',
+      avatarUrl: entry.profile?.avatarUrl || '',
+      bio: entry.profile?.bio || '',
+      online: true,
+    })) : [];
+  }
+
+  function getGlobalUserList() {
+    return Array.from(accountProfiles.values(), (profile) => ({ ...profile, online: true }))
+      .sort((first, second) => first.username.localeCompare(second.username));
+  }
+
+  function broadcastGlobalUsers() {
+    io.emit('global-user-list', getGlobalUserList());
   }
 
   function getOnlineCount() {
@@ -152,6 +170,11 @@ function createNexusServer(options = {}) {
   app.get('/nexus-chat.user.js', (req, res) => sendPublicFile(res, 'nexus-chat.user.js', 'application/javascript'));
   app.get('/nexus-optimizer.user.js', (req, res) => sendPublicFile(res, 'nexus-optimizer.user.js', 'application/javascript'));
   app.get('/version.json', (req, res) => sendPublicFile(res, 'version.json', 'application/json'));
+  if (options.enablePreview || process.env.NODE_ENV !== 'production') {
+    app.get('/preview', (req, res) => {
+      res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Nexus Chat Preview</title><style>html,body{height:100%;margin:0;background:radial-gradient(circle at 50% 20%,#25331f,#090d08 70%);overflow:hidden}</style></head><body><script>sessionStorage.setItem('nexus_username','PreviewUser');window.__NEXUS_BOOTSTRAP__={serverUrl:location.origin};</script><script src="/socket.io/socket.io.js"></script><script src="/client.js"></script></body></html>`);
+    });
+  }
   app.get('/health', (req, res) => {
     res.json({
       status: 'ok',
@@ -172,7 +195,7 @@ function createNexusServer(options = {}) {
 
     function protocolError(code, message) {
       socket.emit('protocol-error', { code, message });
-      socket.emit('system-message', `❌ ${message}`);
+      socket.emit('system-message', `Error: ${message}`);
     }
 
     function allow(event, limit, windowMs) {
@@ -241,7 +264,7 @@ function createNexusServer(options = {}) {
       currentGame = gameId;
       currentUsername = username;
       if (!rooms.has(gameId)) rooms.set(gameId, new Map());
-      rooms.get(gameId).set(socket.id, { username });
+      rooms.get(gameId).set(socket.id, { username, socketId: socket.id });
       if (!roomHistory.has(gameId)) roomHistory.set(gameId, []);
       if (!roomPolls.has(gameId)) roomPolls.set(gameId, new Map());
       if (!roomPinned.has(gameId)) roomPinned.set(gameId, null);
@@ -259,9 +282,17 @@ function createNexusServer(options = {}) {
 
       socket.emit('join-accepted', { gameId, username });
       const socialSnapshot = await socialStore.snapshot(currentAccountId, getOnlineAccountIds());
+      const profile = { ...socialSnapshot.profile, username };
+      accountProfiles.set(currentAccountId, profile);
+      rooms.get(gameId).set(socket.id, {
+        username,
+        socketId: socket.id,
+        accountId: currentAccountId,
+        profile,
+      });
       socket.emit('social-session', {
         token: issuedToken,
-        protocolVersion: 2,
+        protocolVersion: 3,
         serverVersion: packageJson.version,
         ...socialSnapshot,
       });
@@ -271,6 +302,7 @@ function createNexusServer(options = {}) {
       if (pinned) socket.emit('pinned-message', pinned);
       socket.to(gameId).emit('system-message', `${username} joined the chat.`);
       io.to(gameId).emit('user-list', getUserList(gameId));
+      broadcastGlobalUsers();
     });
 
     socket.on('change-username', async (value) => {
@@ -293,13 +325,25 @@ function createNexusServer(options = {}) {
       }
       const oldName = currentUsername;
       currentUsername = newUsername;
-      if (currentAccountId) await socialStore.updateUsername(currentAccountId, newUsername);
-      room.set(socket.id, { username: newUsername });
+      let updatedProfile = null;
+      if (currentAccountId) {
+        updatedProfile = await socialStore.updateUsername(currentAccountId, newUsername);
+        accountProfiles.set(currentAccountId, updatedProfile);
+      }
+      room.set(socket.id, {
+        username: newUsername,
+        socketId: socket.id,
+        accountId: currentAccountId,
+        profile: updatedProfile,
+      });
       socket.emit('username-change-accepted', { newUsername });
       socket.emit('system-message', `✅ Your name is now ${newUsername}.`);
       socket.to(currentGame).emit('system-message', `${oldName} changed their name to ${newUsername}.`);
       io.to(currentGame).emit('user-list', getUserList(currentGame));
-      if (currentAccountId) await refreshFriendPresence(currentAccountId);
+      if (currentAccountId) {
+        await refreshFriendPresence(currentAccountId);
+        broadcastGlobalUsers();
+      }
     });
 
     socket.on('chat-message', (rawPayload) => {
@@ -312,6 +356,9 @@ function createNexusServer(options = {}) {
       const message = {
         ...parsed.value,
         author: currentUsername,
+        authorId: currentAccountId,
+        profile: accountProfiles.get(currentAccountId) || null,
+        reactions: {},
         messageId: crypto.randomUUID(),
         timestamp: Date.now(),
       };
@@ -350,6 +397,69 @@ function createNexusServer(options = {}) {
       if (message) io.emit('global-message', message);
     });
 
+    socket.on('global-private-message', (payload) => {
+      if (!currentAccountId || !allow('global-private-message', 5, 10_000)) return;
+      if (!payload || typeof payload.recipient !== 'string') {
+        protocolError('INVALID_GLOBAL_PRIVATE_MESSAGE', 'Private message data is invalid.');
+        return;
+      }
+      const parsedRecipient = readUsername(payload.recipient);
+      const parsedText = readText(payload.text, { name: 'Private message', max: LIMITS.message });
+      if (!parsedRecipient.ok || !parsedText.ok) {
+        protocolError('INVALID_GLOBAL_PRIVATE_MESSAGE', parsedRecipient.error || parsedText.error);
+        return;
+      }
+      const target = Array.from(accountProfiles.entries()).find(
+        ([, profile]) => normalizeName(profile.username) === normalizeName(parsedRecipient.value),
+      );
+      if (!target) {
+        protocolError('USER_NOT_FOUND', `User '${parsedRecipient.value}' is not online globally.`);
+        return;
+      }
+      const messageId = crypto.randomUUID();
+      const message = {
+        id: messageId,
+        messageId,
+        authorId: currentAccountId,
+        author: accountProfiles.get(currentAccountId)?.username || currentUsername,
+        recipientId: target[0],
+        recipient: target[1].username,
+        text: parsedText.value,
+        timestamp: Date.now(),
+        private: true,
+        profile: accountProfiles.get(currentAccountId) || null,
+        reactions: {},
+      };
+      emitToAccount(target[0], 'global-message', message);
+      if (target[0] !== currentAccountId) emitToAccount(currentAccountId, 'global-message', message);
+      socket.emit('message-delivered', { messageId: message.messageId, private: true, channel: 'global' });
+    });
+
+    socket.on('profile-update', async (payload) => {
+      if (!currentAccountId || !allow('profile-update', 4, 30_000)) return;
+      const parsed = readProfile(payload);
+      if (!parsed.ok) {
+        protocolError('INVALID_PROFILE', parsed.error);
+        return;
+      }
+      const profile = await socialStore.updateProfile(currentAccountId, parsed.value);
+      if (!profile) return;
+      accountProfiles.set(currentAccountId, profile);
+      const room = rooms.get(currentGame);
+      if (room?.has(socket.id)) {
+        room.set(socket.id, {
+          username: currentUsername,
+          socketId: socket.id,
+          accountId: currentAccountId,
+          profile,
+        });
+        io.to(currentGame).emit('user-list', getUserList(currentGame));
+      }
+      socket.emit('profile-updated', profile);
+      await refreshFriendPresence(currentAccountId);
+      broadcastGlobalUsers();
+    });
+
     socket.on('friend-request', async (value) => {
       if (!currentAccountId || !allow('friend-request', 3, 30_000)) return;
       const parsed = readFriendCode(value);
@@ -379,6 +489,18 @@ function createNexusServer(options = {}) {
         return;
       }
       await Promise.all([emitSocialUpdate(result.request.fromId), emitSocialUpdate(result.request.toId)]);
+    });
+
+    socket.on('remove-friend', async (friendId) => {
+      if (!currentAccountId || !allow('remove-friend', 5, 30_000) || typeof friendId !== 'string') return;
+      const result = await socialStore.removeFriend(currentAccountId, friendId);
+      if (!result.ok) {
+        protocolError(result.code, result.error);
+        return;
+      }
+      await Promise.all([emitSocialUpdate(currentAccountId), emitSocialUpdate(friendId)]);
+      emitToAccount(currentAccountId, 'friend-removed', { friendId, friend: result.friend });
+      emitToAccount(friendId, 'friend-removed', { friendId: currentAccountId });
     });
 
     socket.on('direct-history', async (friendId) => {
@@ -435,9 +557,42 @@ function createNexusServer(options = {}) {
       socket.to(currentGame).emit('user-typing', { username: currentUsername, typing: false });
     });
 
+    socket.on('typing-update', async (payload) => {
+      if (!currentAccountId || !payload || typeof payload.typing !== 'boolean'
+        || !['game', 'global', 'direct'].includes(payload.channel)
+        || !allow('typing-update', 20, 10_000)) return;
+      const update = {
+        channel: payload.channel,
+        userId: currentAccountId,
+        username: payload.channel === 'game'
+          ? currentUsername
+          : (accountProfiles.get(currentAccountId)?.username || currentUsername),
+        profile: accountProfiles.get(currentAccountId) || null,
+        typing: payload.typing,
+      };
+      if (payload.channel === 'game') {
+        if (!requireJoined()) return;
+        socket.to(currentGame).emit('typing-update', update);
+        return;
+      }
+      if (payload.channel === 'global') {
+        socket.broadcast.emit('typing-update', update);
+        return;
+      }
+      if (typeof payload.friendId !== 'string') return;
+      const friendIds = await socialStore.friendIds(currentAccountId);
+      if (!friendIds.includes(payload.friendId)) return;
+      emitToAccount(payload.friendId, 'typing-update', { ...update, friendId: currentAccountId });
+    });
+
     socket.on('request-online', () => {
       if (!requireJoined() || !allow('request-online', 4, 10_000)) return;
       socket.emit('online-list', getUserList(currentGame));
+    });
+
+    socket.on('request-global-online', () => {
+      if (!currentAccountId || !allow('request-global-online', 4, 10_000)) return;
+      socket.emit('global-online-list', getGlobalUserList());
     });
 
     socket.on('add-reaction', (payload) => {
@@ -448,17 +603,39 @@ function createNexusServer(options = {}) {
         protocolError('INVALID_REACTION', 'Reaction is invalid.');
         return;
       }
+      const message = (roomHistory.get(currentGame) || []).find((entry) => entry.messageId === payload.messageId);
+      if (!message) {
+        protocolError('MESSAGE_NOT_FOUND', 'That match message no longer exists.');
+        return;
+      }
       const reactions = roomReactions.get(currentGame);
       if (!reactions.has(payload.messageId)) reactions.set(payload.messageId, new Map());
       const messageReactions = reactions.get(payload.messageId);
       if (!messageReactions.has(payload.emoji)) messageReactions.set(payload.emoji, new Set());
       const voters = messageReactions.get(payload.emoji);
       voters.add(socket.id);
+      message.reactions = { ...(message.reactions || {}), [payload.emoji]: voters.size };
       io.to(currentGame).emit('reaction-update', {
         messageId: payload.messageId,
         emoji: payload.emoji,
         count: voters.size,
       });
+    });
+
+    socket.on('add-global-reaction', async (payload) => {
+      if (!currentAccountId || !allow('add-global-reaction', 12, 10_000)) return;
+      if (!payload || typeof payload.messageId !== 'string'
+        || payload.messageId.length > LIMITS.messageId
+        || !ALLOWED_REACTIONS.has(payload.emoji)) {
+        protocolError('INVALID_REACTION', 'Reaction is invalid.');
+        return;
+      }
+      const reactions = await socialStore.addGlobalReaction(currentAccountId, payload.messageId, payload.emoji);
+      if (!reactions) {
+        protocolError('MESSAGE_NOT_FOUND', 'That global message no longer exists.');
+        return;
+      }
+      io.emit('global-reaction-update', { messageId: payload.messageId, reactions });
     });
 
     socket.on('create-poll', (payload) => {
@@ -516,11 +693,15 @@ function createNexusServer(options = {}) {
         const sockets = onlineAccounts.get(currentAccountId);
         if (sockets) {
           sockets.delete(socket.id);
-          if (sockets.size === 0) onlineAccounts.delete(currentAccountId);
+          if (sockets.size === 0) {
+            onlineAccounts.delete(currentAccountId);
+            accountProfiles.delete(currentAccountId);
+          }
         }
         refreshFriendPresence(currentAccountId).catch((error) => {
           console.error('[NexusChat] Failed to refresh friend presence', error);
         });
+        broadcastGlobalUsers();
       }
       limiter.clear();
     });
@@ -530,7 +711,16 @@ function createNexusServer(options = {}) {
     app,
     io,
     server,
-    state: { rooms, roomHistory, roomPolls, roomPinned, roomReactions, onlineAccounts, socialStore },
+    state: {
+      rooms,
+      roomHistory,
+      roomPolls,
+      roomPinned,
+      roomReactions,
+      onlineAccounts,
+      accountProfiles,
+      socialStore,
+    },
     version: packageJson.version,
     async start(port = 0) {
       await socialStore.ready;

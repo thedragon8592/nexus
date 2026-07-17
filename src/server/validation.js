@@ -10,9 +10,11 @@ const LIMITS = Object.freeze({
   history: 50,
   messageId: 80,
   friendCode: 14,
+  bio: 160,
+  avatarUrl: 500,
 });
 
-const ALLOWED_REACTIONS = new Set(['👍', '😂', '😮', '❤️', '🔥']);
+const VALID_REACTIONS = new Set(['\u{1F44D}', '\u{1F602}', '\u{1F62E}', '\u2764\uFE0F', '\u{1F525}']);
 const GAME_ID_PATTERN = /^[a-zA-Z0-9._:-]+$/;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 const SAFE_COLOR = /^(#[0-9a-f]{6}|hsl\(\s*(?:\d|[1-9]\d|[12]\d\d|3[0-5]\d|360)\s*,\s*(?:\d|[1-9]\d|100)%\s*,\s*(?:\d|[1-9]\d|100)%\s*\))$/i;
@@ -53,6 +55,29 @@ function readFriendCode(value) {
     return { ok: false, error: 'Friend code must look like NX-12AB34 or NX-12AB34CD.' };
   }
   return { ok: true, value: result.value.toUpperCase() };
+}
+
+function readProfile(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { ok: false, error: 'Profile data is invalid.' };
+  }
+  const bio = readText(payload.bio || '', {
+    name: 'Bio', min: 0, max: LIMITS.bio, allowEmpty: true,
+  });
+  if (!bio.ok) return bio;
+  const avatarUrl = typeof payload.avatarUrl === 'string' ? payload.avatarUrl.trim() : '';
+  if (avatarUrl.length > LIMITS.avatarUrl) {
+    return { ok: false, error: `Avatar URL must be at most ${LIMITS.avatarUrl} characters.` };
+  }
+  if (avatarUrl) {
+    try {
+      const parsed = new URL(avatarUrl);
+      if (parsed.protocol !== 'https:') throw new Error('Avatar must use HTTPS.');
+    } catch {
+      return { ok: false, error: 'Avatar URL must be a valid HTTPS URL.' };
+    }
+  }
+  return { ok: true, value: { bio: bio.value, avatarUrl } };
 }
 
 function readColor(value) {
@@ -116,7 +141,7 @@ function readPoll(payload) {
 }
 
 module.exports = {
-  ALLOWED_REACTIONS,
+  ALLOWED_REACTIONS: VALID_REACTIONS,
   LIMITS,
   normalizeName,
   readChatPayload,
@@ -124,6 +149,7 @@ module.exports = {
   readFriendCode,
   readGameId,
   readPoll,
+  readProfile,
   readText,
   readUsername,
 };

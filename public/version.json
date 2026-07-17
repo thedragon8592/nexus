@@ -1,16 +1,16 @@
 {
-  "version": "3.2.1",
+  "version": "3.3.0",
   "changes": [
-    "New tabbed settings center with live diagnostics",
-    "Six distinct color-theory themes",
-    "No-cache delivery for client and userscripts",
-    "Versioned social protocol for Nexus ID and global chat",
-    "Persistent Turso storage for accounts, friends and messages"
+    "Profiles with avatars, bios, and hover actions",
+    "Private messages, mentions, reactions, and typing status in Match and Global",
+    "User blocking in Match and Global",
+    "Friend removal and hover-to-add friend requests",
+    "English-only interface and settings"
   ],
   "bugs": [
-    "Fixed bootstrap loader collision",
-    "Added local server override for full integration testing",
-    "Improved clipboard fallback and connection error visibility",
-    "Moved all clients to the new nexus-chat-free Render service"
+    "Fixed Global and Match message rendering and reaction history",
+    "Prevented commands from being interpreted in friend DMs",
+    "Synchronized the packaged browser extension with Tampermonkey",
+    "Persisted profiles and Global reactions in Turso"
   ]
 }

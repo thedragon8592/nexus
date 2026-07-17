@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { createClient } = require('@libsql/client');
 const { TursoSocialStore } = require('../src/server/turso-social-store');
 
 test('Turso persists accounts, friendships and chat history across restarts', async (t) => {
@@ -20,6 +21,13 @@ test('Turso persists accounts, friendships and chat history across restarts', as
     }
   });
 
+  const legacy = createClient({ url, authToken: 'local-test-token' });
+  await legacy.execute(`CREATE TABLE users (
+    id TEXT PRIMARY KEY, username TEXT NOT NULL, friend_code TEXT NOT NULL UNIQUE,
+    token_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  )`);
+  legacy.close();
+
   const first = new TursoSocialStore({ url, authToken: 'local-test-token' });
   await first.ready;
   const alice = await first.register('Alice');
@@ -28,7 +36,9 @@ test('Turso persists accounts, friendships and chat history across restarts', as
   const request = await first.requestFriend(alice.user.id, bob.user.friendCode);
   assert.equal(request.ok, true);
   assert.equal((await first.respondToFriendRequest(bob.user.id, request.request.id, true)).ok, true);
-  await first.addGlobalMessage(alice.user.id, 'persistent global');
+  await first.updateProfile(alice.user.id, { avatarUrl: 'https://example.com/a.png', bio: 'Persistent bio' });
+  const globalMessage = await first.addGlobalMessage(alice.user.id, 'persistent global');
+  await first.addGlobalReaction(bob.user.id, globalMessage.id, '❤️');
   await first.addDirectMessage(alice.user.id, bob.user.id, 'persistent direct');
   await first.close();
 
@@ -37,7 +47,10 @@ test('Turso persists accounts, friendships and chat history across restarts', as
 
   const aliceSnapshot = await second.snapshot(alice.user.id);
   assert.equal(aliceSnapshot.friends[0].username, 'Bob');
+  assert.equal(aliceSnapshot.profile.bio, 'Persistent bio');
+  assert.equal(aliceSnapshot.profile.avatarUrl, 'https://example.com/a.png');
   assert.equal(aliceSnapshot.globalHistory[0].text, 'persistent global');
+  assert.equal(aliceSnapshot.globalHistory[0].reactions['❤️'], 1);
   assert.equal((await second.directHistory(alice.user.id, bob.user.id))[0].text, 'persistent direct');
 
   const stored = await second.client.execute({
@@ -45,4 +58,8 @@ test('Turso persists accounts, friendships and chat history across restarts', as
     args: [alice.user.id],
   });
   assert.notEqual(String(stored.rows[0].token_hash), alice.token);
+
+  assert.equal((await second.removeFriend(alice.user.id, bob.user.id)).ok, true);
+  assert.deepEqual((await second.snapshot(alice.user.id)).friends, []);
+  assert.equal(await second.directHistory(alice.user.id, bob.user.id), null);
 });
