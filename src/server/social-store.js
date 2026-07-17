@@ -86,6 +86,7 @@ class SocialStore {
       avatarUrl: user.avatarUrl || '',
       bio: user.bio || '',
       createdAt: user.createdAt,
+      updatedAt: user.updatedAt || user.createdAt,
     };
   }
 

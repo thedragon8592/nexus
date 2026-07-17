@@ -17,15 +17,15 @@
 
 (function nexusOptimizer() {
     'use strict';
-    if (window.__nexusOptimizerLoaded) return;
+    if (window.__nexusOptimizerLoaded || window.__nexusChatLoaded || window.__nexusIntegratedOptimizer) return;
     window.__nexusOptimizerLoaded = true;
 
     const MODE_KEY = 'nexus_optimizer_mode';
     const CONFIG_KEY = 'surviv_config';
     const modes = {
         native: null,
-        balanced: { highResTex: false, screenShake: false, interpolation: true, localRotation: false },
-        'low-power': { highResTex: false, screenShake: false, interpolation: false, localRotation: false }
+        balanced: { highResTex: false, screenShake: false, interpolation: true, localRotation: true },
+        'low-power': { highResTex: false, screenShake: false, interpolation: false, localRotation: true }
     };
 
     function readJson(key, fallback) {
@@ -42,6 +42,7 @@
     apply(currentMode);
 
     function createPanel() {
+        if (window.__nexusChatLoaded || window.__nexusIntegratedOptimizer) return;
         if (!document.body) { requestAnimationFrame(createPanel); return; }
         const panel = document.createElement('section');
         panel.id = 'nx-optimizer';

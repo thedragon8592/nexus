@@ -231,6 +231,7 @@ test('profiles, global private messages, reactions, typing and friend removal wo
   const [profile] = await profileUpdated;
   assert.equal(profile.avatarUrl, 'https://example.com/alice.png');
   assert.equal(profile.bio, 'Last survivor standing.');
+  assert.ok(profile.updatedAt >= aliceJoin.socialSession.profile.updatedAt);
 
   const globalMessageForAlice = nextEvent(alice, 'global-message');
   alice.emit('global-message', 'Hello @Bob');
@@ -335,6 +336,17 @@ test('versioned public assets are served without stale caching', async (t) => {
   assert.match(client, /theme-orchid/);
   assert.match(client, /\^NX-\[0-9A-F\]\{6,8\}\$/);
   assert.match(client, /global-private-message/);
+  assert.match(client, /function preparePrivateMessage/);
+  assert.match(client, /Change your name in the game/);
+  assert.match(client, /incomingVersion < currentVersion/);
+  assert.doesNotMatch(client, /emit\('change-username'/);
+  assert.match(client, /__nexusIntegratedOptimizer/);
+  assert.match(client, /showOptimizationProgress/);
+  assert.match(client, /nx-chat-dimmed/);
+  assert.match(client, /sharedAudioContext/);
+  assert.match(client, /localRotation: true/);
+  assert.doesNotMatch(client, /observer\.observe\(document\.body/);
+  assert.doesNotMatch(client, /Reload the game to apply/);
   assert.match(client, /add-global-reaction/);
   assert.match(client, /profile-update/);
   assert.match(client, /data-remove-friend/);
@@ -342,6 +354,7 @@ test('versioned public assets are served without stale caching', async (t) => {
 
   const userscript = await fetch(`${url}/nexus-chat.user.js`).then((response) => response.text());
   assert.match(userscript, /@version\s+3\.3\.0/);
+  assert.match(userscript, /live performance optimizer/);
   assert.match(userscript, /nexus-chat-free\.onrender\.com/);
   assert.match(userscript, /nx-bootstrap-loader/);
   assert.doesNotMatch(userscript, /overlay\.id = 'nx-game-loader'/);
