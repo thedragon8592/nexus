@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Nexus Optimizer Pro
-// @namespace    https://nexus-chat-p7ph.onrender.com/
-// @version      2.0.0
+// @namespace    https://nexus-chat-free.onrender.com/
+// @version      2.0.1
 // @description  Safe performance presets using real Survev and Resurviv configuration keys.
 // @author       ! System
 // @license      MIT
@@ -11,8 +11,8 @@
 // @match        *://*.survev.io/*
 // @run-at       document-start
 // @grant        none
-// @downloadURL  https://nexus-chat-p7ph.onrender.com/nexus-optimizer.user.js
-// @updateURL    https://nexus-chat-p7ph.onrender.com/nexus-optimizer.user.js
+// @downloadURL  https://nexus-chat-free.onrender.com/nexus-optimizer.user.js
+// @updateURL    https://nexus-chat-free.onrender.com/nexus-optimizer.user.js
 // ==/UserScript==
 
 (function nexusOptimizer() {

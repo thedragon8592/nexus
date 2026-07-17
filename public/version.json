@@ -1,14 +1,16 @@
 {
-  "version": "3.2.0",
+  "version": "3.2.1",
   "changes": [
     "New tabbed settings center with live diagnostics",
     "Six distinct color-theory themes",
     "No-cache delivery for client and userscripts",
-    "Versioned social protocol for Nexus ID and global chat"
+    "Versioned social protocol for Nexus ID and global chat",
+    "Persistent Turso storage for accounts, friends and messages"
   ],
   "bugs": [
     "Fixed bootstrap loader collision",
     "Added local server override for full integration testing",
-    "Improved clipboard fallback and connection error visibility"
+    "Improved clipboard fallback and connection error visibility",
+    "Moved all clients to the new nexus-chat-free Render service"
   ]
 }

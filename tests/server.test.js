@@ -159,7 +159,7 @@ test('social accounts support global chat, friend requests and direct messages',
   const bobJoin = await join(bob, 'social-game', 'Bob');
 
   assert.equal(aliceJoin.socialSession.protocolVersion, 2);
-  assert.equal(aliceJoin.socialSession.serverVersion, '3.2.0');
+  assert.equal(aliceJoin.socialSession.serverVersion, '3.2.1');
   assert.match(aliceJoin.socialSession.profile.friendCode, /^NX-[0-9A-F]{8}$/);
   assert.ok(aliceJoin.socialSession.token);
 
@@ -199,7 +199,7 @@ test('versioned public assets are served without stale caching', async (t) => {
   t.after(() => nexus.stop());
 
   const health = await fetch(`${url}/health`).then((response) => response.json());
-  assert.equal(health.version, '3.2.0');
+  assert.equal(health.version, '3.2.1');
 
   for (const path of ['/client.js', '/nexus-chat.user.js', '/nexus-optimizer.user.js']) {
     const response = await fetch(`${url}${path}`);
@@ -209,7 +209,8 @@ test('versioned public assets are served without stale caching', async (t) => {
   }
 
   const client = await fetch(`${url}/client.js`).then((response) => response.text());
-  assert.match(client, /const EXT_VERSION = '3\.2\.0'/);
+  assert.match(client, /const EXT_VERSION = '3\.2\.1'/);
+  assert.match(client, /https:\/\/nexus-chat-free\.onrender\.com/);
   assert.match(client, /data-settings-page="diagnostics"/);
   assert.match(client, /theme-ocean/);
   assert.match(client, /theme-ember/);
@@ -217,7 +218,8 @@ test('versioned public assets are served without stale caching', async (t) => {
   assert.match(client, /\^NX-\[0-9A-F\]\{6,8\}\$/);
 
   const userscript = await fetch(`${url}/nexus-chat.user.js`).then((response) => response.text());
-  assert.match(userscript, /@version\s+3\.2\.0/);
+  assert.match(userscript, /@version\s+3\.2\.1/);
+  assert.match(userscript, /nexus-chat-free\.onrender\.com/);
   assert.match(userscript, /nx-bootstrap-loader/);
   assert.doesNotMatch(userscript, /overlay\.id = 'nx-game-loader'/);
 });

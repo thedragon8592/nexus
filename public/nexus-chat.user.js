@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Nexus Chat
-// @namespace    https://nexus-chat-p7ph.onrender.com/
+// @namespace    https://nexus-chat-free.onrender.com/
 // @icon         https://i.ibb.co/FkXVWJnC/Chat-GPT-Image-26-jun-2026-19-06-21.png
-// @version      3.2.0
+// @version      3.2.1
 // @description  Nexus ID, global chat, friends and direct messages for Resurviv and Survev.
 // @author       ! System
 // @license      MIT
@@ -14,9 +14,9 @@
 // @grant        GM.xmlHttpRequest
 // @grant        GM.getValue
 // @grant        GM.setValue
-// @connect      nexus-chat-p7ph.onrender.com
-// @downloadURL  https://nexus-chat-p7ph.onrender.com/nexus-chat.user.js
-// @updateURL    https://nexus-chat-p7ph.onrender.com/nexus-chat.user.js
+// @connect      nexus-chat-free.onrender.com
+// @downloadURL  https://nexus-chat-free.onrender.com/nexus-chat.user.js
+// @updateURL    https://nexus-chat-free.onrender.com/nexus-chat.user.js
 // ==/UserScript==
 
 (async function nexusLoader() {
@@ -24,7 +24,7 @@
     if (window.__nexusTampermonkeyLoader) return;
     window.__nexusTampermonkeyLoader = true;
 
-    const SERVER = 'https://nexus-chat-p7ph.onrender.com';
+    const SERVER = 'https://nexus-chat-free.onrender.com';
     const TOKEN_KEY = 'nexus_social_token';
 
     function requestText(url) {
@@ -63,7 +63,7 @@
         const savedToken = await GM.getValue(TOKEN_KEY, '');
         const [socketIoCode, clientCode] = await Promise.all([
             requestText(`${SERVER}/socket.io/socket.io.js?v=4.7.2`),
-            requestText(`${SERVER}/client.js?v=3.2.0`)
+            requestText(`${SERVER}/client.js?v=3.2.1`)
         ]);
         const script = document.createElement('script');
         script.textContent = `window.__NEXUS_BOOTSTRAP__=${JSON.stringify({ socialToken: savedToken, serverUrl: SERVER })};\n${socketIoCode}\n${clientCode}`;
