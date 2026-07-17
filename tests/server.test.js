@@ -368,9 +368,12 @@ test('versioned public assets are served without stale caching', async (t) => {
   assert.match(client, /data-remove-friend/);
   assert.match(client, /create-global-poll/);
   assert.match(client, /global-pin-message/);
-  assert.match(client, /activeChannel === 'direct' \? socialFriends/);
+  assert.match(client, /activeChannel === 'direct' \? \(selectedFriend \? \[selectedFriend\] : \[\]\)/);
   assert.match(client, /data-mention=/);
   assert.match(client, /containsMention/);
+  assert.match(client, /split\(\/\\s\+\/\).*join\('\\\\s\+'\)/);
+  assert.match(client, /mention: \[\[620/);
+  assert.match(client, /playSound\('navigate'\)/);
   assert.doesNotMatch(client, /Configuración de Nexus/);
 
   const userscript = await fetch(`${url}/nexus-chat.user.js`).then((response) => response.text());
