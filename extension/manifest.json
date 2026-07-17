@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Nexus Chat",
   "version": "3.3.0",
-  "description": "In-game real-time chat overlay for resurviv.biz and survev.io",
+  "description": "Nexus chat, social features and live optimizer for resurviv.biz and survev.io",
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",

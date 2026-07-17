@@ -3,7 +3,7 @@
 // @namespace    https://nexus-chat-free.onrender.com/
 // @icon         https://i.ibb.co/FkXVWJnC/Chat-GPT-Image-26-jun-2026-19-06-21.png
 // @version      3.3.0
-// @description  Nexus ID, global chat, friends and direct messages for Resurviv and Survev.
+// @description  Nexus chat, social features and live performance optimizer for Resurviv and Survev.
 // @author       ! System
 // @license      MIT
 // @match        *://resurviv.biz/*

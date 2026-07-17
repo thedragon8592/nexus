@@ -2,6 +2,7 @@
     'use strict';
     if (window.__nexusChatLoaded) return;
     window.__nexusChatLoaded = true;
+    window.__nexusIntegratedOptimizer = true;
 
     const EXT_VERSION = '3.3.0';
     const DOWNLOAD_URL = 'https://wnexuschat.netlify.app';
@@ -135,16 +136,112 @@
     const AVAILABLE_THEMES = ['dark', 'light', 'midnight', 'ocean', 'ember', 'orchid'];
     if (!AVAILABLE_THEMES.includes(config.theme)) config.theme = DEFAULT_CONFIG.theme;
 
-    function applyPerformanceMode(mode) {
-        if (mode === 'native') return;
+    const PERFORMANCE_PROFILES = Object.freeze({
+        native: {
+            label: 'Native', game: null, renderedMessages: 100, particles: 80,
+            details: 'Keeps the game and Nexus visual effects unchanged.'
+        },
+        balanced: {
+            label: 'Balanced', renderedMessages: 60, particles: 28,
+            game: { highResTex: false, screenShake: false, interpolation: true, localRotation: true },
+            details: 'Low-resolution textures, no shake, smooth interpolation, client-side rotation, and lighter Nexus effects.'
+        },
+        'low-power': {
+            label: 'Low power', renderedMessages: 30, particles: 0,
+            game: { highResTex: false, screenShake: false, interpolation: false, localRotation: true },
+            details: 'Minimum Nexus effects and message workload while keeping client-side rotation enabled.'
+        }
+    });
+
+    function selectedPerformanceProfile(mode = config.performanceMode) {
+        return PERFORMANCE_PROFILES[mode] || PERFORMANCE_PROFILES.balanced;
+    }
+
+    function persistGamePerformance(profile) {
+        if (!profile.game) return;
         const gameConfig = readStoredJson('surviv_config', {});
-        gameConfig.highResTex = false;
-        gameConfig.screenShake = false;
-        gameConfig.interpolation = mode !== 'low-power';
-        gameConfig.localRotation = false;
+        Object.assign(gameConfig, profile.game);
         localStorage.setItem('surviv_config', JSON.stringify(gameConfig));
     }
-    applyPerformanceMode(config.performanceMode);
+
+    function applyRuntimePerformance(mode) {
+        const safeMode = PERFORMANCE_PROFILES[mode] ? mode : 'balanced';
+        document.documentElement.dataset.nexusPerformance = safeMode;
+    }
+
+    function pruneRuntimeState(profile) {
+        if (messageHistory.length > 100) messageHistory = messageHistory.slice(-100);
+        if (globalMessageHistory.length > 100) globalMessageHistory = globalMessageHistory.slice(-100);
+        directMessageHistory.forEach((messages, friendId) => {
+            if (messages.length > 100) directMessageHistory.set(friendId, messages.slice(-100));
+        });
+        while (profileCache.size > 250) {
+            const removableId = Array.from(profileCache.keys()).find((id) => id !== socialProfile?.id && !socialFriends.some((friend) => friend.id === id));
+            if (!removableId) break;
+            profileCache.delete(removableId);
+        }
+        if (profile.renderedMessages < 100 && messageArea && !isDim) renderActiveChannel();
+    }
+
+    function refreshPerformanceDetails() {
+        const profile = selectedPerformanceProfile();
+        const setText = (id, value) => { const element = document.getElementById(id); if (element) element.textContent = value; };
+        setText('cfg-performance-state', `${profile.label} active`);
+        setText('cfg-performance-summary', profile.details);
+        setText('cfg-performance-textures', profile.game ? (profile.game.highResTex ? 'High' : 'Low') : 'Game setting');
+        setText('cfg-performance-shake', profile.game ? (profile.game.screenShake ? 'On' : 'Off') : 'Game setting');
+        setText('cfg-performance-interpolation', profile.game ? (profile.game.interpolation ? 'On' : 'Off') : 'Game setting');
+        setText('cfg-performance-rotation', profile.game ? (profile.game.localRotation ? 'On' : 'Off') : 'Game setting');
+        setText('cfg-performance-messages', String(profile.renderedMessages));
+    }
+
+    function showOptimizationProgress(profile, tasks) {
+        const previous = document.getElementById('nx-optimization-loader');
+        if (previous) previous.remove();
+        const overlay = document.createElement('div');
+        overlay.id = 'nx-optimization-loader';
+        overlay.innerHTML = `<div class="nx-opt-loader-card"><span class="nx-opt-loader-mark">N</span><strong>Applying ${profile.label}</strong><p id="nx-opt-loader-status">Preparing optimizer…</p><div class="nx-opt-loader-track"><i></i></div><small id="nx-opt-loader-count">0 / ${tasks.length}</small></div>`;
+        document.documentElement.appendChild(overlay);
+        return new Promise((resolve) => {
+            let index = 0;
+            const advance = () => {
+                const task = tasks[index];
+                if (!task) {
+                    overlay.classList.add('done');
+                    setTimeout(() => { overlay.remove(); resolve(); }, 320);
+                    return;
+                }
+                document.getElementById('nx-opt-loader-status').textContent = task.label;
+                task.run();
+                index += 1;
+                overlay.style.setProperty('--nx-opt-progress', `${Math.round((index / tasks.length) * 100)}%`);
+                document.getElementById('nx-opt-loader-count').textContent = `${index} / ${tasks.length}`;
+                setTimeout(advance, 140);
+            };
+            requestAnimationFrame(advance);
+        });
+    }
+
+    function applyPerformanceMode(mode, { showProgress = false } = {}) {
+        const safeMode = PERFORMANCE_PROFILES[mode] ? mode : 'balanced';
+        const profile = PERFORMANCE_PROFILES[safeMode];
+        config.performanceMode = safeMode;
+        const tasks = [
+            { label: 'Saving verified game settings', run: () => persistGamePerformance(profile) },
+            { label: 'Reducing Nexus rendering effects', run: () => applyRuntimePerformance(safeMode) },
+            { label: 'Trimming inactive chat work', run: () => pruneRuntimeState(profile) },
+            { label: 'Refreshing optimizer diagnostics', run: () => {
+                localStorage.setItem('nexus_optimizer_mode', safeMode);
+                window.dispatchEvent(new CustomEvent('NEXUS_PERFORMANCE_APPLIED', { detail: { mode: safeMode } }));
+                refreshPerformanceDetails();
+            } }
+        ];
+        if (!showProgress || !document.body) {
+            tasks.forEach((task) => task.run());
+            return Promise.resolve();
+        }
+        return showOptimizationProgress(profile, tasks);
+    }
 
     let username     = sessionStorage.getItem('nexus_username') || '';
     function getUserColor(name) {
@@ -199,53 +296,62 @@
     let scrollToBottomBtn = null;
     let scrollAnimationId = null;
     let killLeaderName = null;
+    let historySaveTimer = null;
+    let historyDirty = false;
+    let sharedAudioContext = null;
+
+    applyPerformanceMode(config.performanceMode);
 
     function playSound(type) {
         if (config.dndMode && type !== 'mention') return;
         try {
-            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            const sampleRate = audioCtx.sampleRate;
-            const gainNode = audioCtx.createGain();
-            gainNode.gain.value = config.volume || 0.5;
-            gainNode.connect(audioCtx.destination);
-            let duration, freq1, freq2;
-            switch(type) {
-                case 'open':    duration=0.12; freq1=600;  freq2=900;  break;
-                case 'close':   duration=0.12; freq1=900;  freq2=600;  break;
-                case 'send':    duration=0.06; freq1=1200; freq2=1200; break;
-                case 'mention': duration=0.3;  freq1=800;  freq2=1000; break;
-                default:        duration=0.1;  freq1=700;  freq2=700;
-            }
-            const bufferSize = sampleRate * duration;
-            const buffer     = audioCtx.createBuffer(1, bufferSize, sampleRate);
-            const data       = buffer.getChannelData(0);
-            for (let i = 0; i < bufferSize; i++) {
-                const t = i / sampleRate;
-                let s;
-                if      (type === 'open')    s = Math.sin(2*Math.PI*freq1*t)*(1-t/duration) + Math.sin(2*Math.PI*freq2*t)*(t/duration);
-                else if (type === 'close')   s = Math.sin(2*Math.PI*freq1*t)*(t/duration)   + Math.sin(2*Math.PI*freq2*t)*(1-t/duration);
-                else if (type === 'send')    s = Math.sin(2*Math.PI*freq1*t)*Math.exp(-t*30);
-                else if (type === 'mention') s = Math.sin(2*Math.PI*freq1*t)*Math.exp(-t*8)*0.5 + Math.sin(2*Math.PI*freq2*t)*Math.exp(-(t-0.1)*10)*0.4;
-                else                         s = Math.sin(2*Math.PI*freq1*t)*Math.exp(-t*10);
-                data[i] = s * 0.4;
-            }
-            const source = audioCtx.createBufferSource();
-            source.buffer = buffer;
-            source.connect(gainNode);
-            source.start();
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextClass) return;
+            if (!sharedAudioContext || sharedAudioContext.state === 'closed') sharedAudioContext = new AudioContextClass();
+            if (sharedAudioContext.state === 'suspended') sharedAudioContext.resume().catch(() => {});
+            const patterns = {
+                open: [[600, 0, .07], [900, .045, .08]],
+                close: [[900, 0, .07], [600, .045, .08]],
+                send: [[1100, 0, .055]],
+                mention: [[780, 0, .14], [1020, .12, .16]],
+                default: [[700, 0, .08]]
+            };
+            const volume = Math.max(0, Math.min(1, Number(config.volume ?? .5))) * .12;
+            if (volume <= 0) return;
+            const startAt = sharedAudioContext.currentTime;
+            (patterns[type] || patterns.default).forEach(([frequency, delay, duration]) => {
+                const oscillator = sharedAudioContext.createOscillator();
+                const gain = sharedAudioContext.createGain();
+                oscillator.type = 'sine';
+                oscillator.frequency.value = frequency;
+                gain.gain.setValueAtTime(volume, startAt + delay);
+                gain.gain.exponentialRampToValueAtTime(.0001, startAt + delay + duration);
+                oscillator.connect(gain);
+                gain.connect(sharedAudioContext.destination);
+                oscillator.start(startAt + delay);
+                oscillator.stop(startAt + delay + duration);
+            });
         } catch(e) {}
     }
 
-    function saveHistory() {
+    function flushHistory() {
+        historySaveTimer = null;
+        if (!historyDirty) return;
+        historyDirty = false;
         const toSave = messageHistory.filter((message) => !message.isPrivate).slice(-100);
         try { localStorage.setItem('nexus_chat_history', JSON.stringify(toSave)); } catch(e) {}
+    }
+    function saveHistory() {
+        historyDirty = true;
+        if (historySaveTimer) return;
+        historySaveTimer = setTimeout(flushHistory, 350);
     }
     function loadHistory() {
         try {
             const saved = localStorage.getItem('nexus_chat_history');
             if (saved) {
                 const arr = JSON.parse(saved);
-                messageHistory = Array.isArray(arr) ? arr : [];
+                messageHistory = Array.isArray(arr) ? arr.slice(-100) : [];
                 messageHistory.forEach(msg => {
                     if (msg.system) {
                         const div = document.createElement('div');
@@ -400,10 +506,11 @@
                 updateBadges();
                 totalMessagesThisGame++;
                 const authorKills = payload.kills || 0;
-                if (activeChannel === 'game') {
+                if (activeChannel === 'game' && isChatOpen && !isDim) {
                     addMessage(author, payload.text, isBlocked, mentioned, !!payload.recipient, payload.authorColor, payload.messageId, false, authorKills, payload.profile, payload.reactions);
                 } else {
                     messageHistory.push({ author, authorId: payload.authorId, profile: payload.profile, reactions: payload.reactions, text: payload.text, isBlocked, isMention: mentioned, isPrivate: !!payload.recipient, msgAuthorColor: payload.authorColor, msgId: payload.messageId, authorKills });
+                    if (messageHistory.length > 100) messageHistory = messageHistory.slice(-100);
                     saveHistory();
                 }
             });
@@ -414,23 +521,25 @@
                     socialToken = session.token;
                     persistSocialToken(socialToken);
                 }
-                socialProfile = session.profile;
-                socialFriends = Array.isArray(session.friends) ? session.friends : [];
-                socialRequests = Array.isArray(session.requests) ? session.requests : [];
-                globalMessageHistory = Array.isArray(session.globalHistory) ? session.globalHistory : [];
-                cacheProfile(socialProfile);
-                cacheProfiles(socialFriends);
-                cacheProfiles(socialRequests.map((request) => request.from));
-                cacheProfiles(globalMessageHistory.map((message) => message.profile));
+                socialProfile = cacheProfile(session.profile);
+                socialFriends = Array.isArray(session.friends) ? session.friends.map(cacheProfile) : [];
+                socialRequests = Array.isArray(session.requests)
+                    ? session.requests.map((request) => ({ ...request, from: cacheProfile(request.from) }))
+                    : [];
+                globalMessageHistory = Array.isArray(session.globalHistory)
+                    ? session.globalHistory.map((message) => ({ ...message, profile: cacheProfile(message.profile) }))
+                    : [];
                 renderSocialSidebar();
                 refreshSettingsIdentity();
                 if (activeChannel !== 'game') renderActiveChannel();
             });
             chatSocket.on('social-update', (session) => {
                 let channelChanged = false;
-                socialProfile = session.profile || socialProfile;
-                socialFriends = Array.isArray(session.friends) ? session.friends : socialFriends;
-                socialRequests = Array.isArray(session.requests) ? session.requests : socialRequests;
+                socialProfile = session.profile ? cacheProfile(session.profile) : socialProfile;
+                socialFriends = Array.isArray(session.friends) ? session.friends.map(cacheProfile) : socialFriends;
+                socialRequests = Array.isArray(session.requests)
+                    ? session.requests.map((request) => ({ ...request, from: cacheProfile(request.from) }))
+                    : socialRequests;
                 if (selectedFriend) {
                     const refreshedFriend = socialFriends.find((friend) => friend.id === selectedFriend.id);
                     if (refreshedFriend) selectedFriend = refreshedFriend;
@@ -440,9 +549,6 @@
                         channelChanged = true;
                     }
                 }
-                cacheProfile(socialProfile);
-                cacheProfiles(socialFriends);
-                cacheProfiles(socialRequests.map((request) => request.from));
                 renderSocialSidebar();
                 if (activeChannel === 'direct' || channelChanged) renderActiveChannel();
             });
@@ -453,7 +559,7 @@
                 const mentioned = message.authorId !== socialProfile?.id
                     && new RegExp(`@${escapeRegex(username)}\\b`, 'i').test(message.text || '');
                 if (mentioned && !isUserBlocked(message.authorId, message.author)) playSound('mention');
-                if (activeChannel === 'global') renderSocialMessage(message, false);
+                if (activeChannel === 'global' && isChatOpen && !isDim) renderSocialMessage(message, false);
                 else if (message.authorId !== socialProfile?.id && !isUserBlocked(message.authorId, message.author)) incrementSocialUnread('global');
             });
             chatSocket.on('global-user-list', (users) => {
@@ -475,7 +581,7 @@
                 const history = directMessageHistory.get(friendId) || [];
                 if (!history.some((item) => item.id === message.id)) history.push(message);
                 directMessageHistory.set(friendId, history.slice(-100));
-                if (activeChannel === 'direct' && selectedFriend?.id === friendId) renderSocialMessage(message, true);
+                if (activeChannel === 'direct' && selectedFriend?.id === friendId && isChatOpen && !isDim) renderSocialMessage(message, true);
                 else if (message.fromId !== socialProfile?.id) incrementSocialUnread(friendId);
             });
             chatSocket.on('friend-request-received', ({ from }) => addChannelNotice(`${from.username} sent you a friend request.`));
@@ -485,8 +591,7 @@
                 addChannelNotice('Friend removed.');
             });
             chatSocket.on('profile-updated', (profile) => {
-                socialProfile = profile;
-                cacheProfile(profile);
+                socialProfile = cacheProfile(profile);
                 renderSocialSidebar();
                 refreshSettingsIdentity();
                 addChannelNotice('Profile saved.');
@@ -497,12 +602,6 @@
                 sessionStorage.setItem('nexus_username', username);
                 authorColor = getUserColor(username);
                 localStorage.setItem('nexus_authorColor', authorColor);
-                const cfgNameInput = document.getElementById('cfg-name');
-                if (cfgNameInput) cfgNameInput.value = username;
-            });
-            chatSocket.on('username-change-rejected', ({ rejectedName }) => {
-                const cfgNameInput = document.getElementById('cfg-name');
-                if (cfgNameInput) cfgNameInput.value = username;
             });
             chatSocket.on('user-list', (users) => {
                 window.__nexusOnlineUsers = (users || []).map((user) => typeof user === 'string' ? { username: user } : user);
@@ -631,11 +730,13 @@
             }
             return false;
         };
-        if (check()) return;
-        const observer = new MutationObserver(() => {
-            if (check()) observer.disconnect();
-        });
-        observer.observe(document.body, { childList: true, subtree: true });
+        let attempts = 0;
+        const search = () => {
+            if (check()) return;
+            attempts += 1;
+            if (attempts < 30) setTimeout(search, 1000);
+        };
+        search();
     }
 
     function observeKillLeader() {
@@ -756,8 +857,16 @@
 
     function cacheProfile(profile) {
         if (profile && profile.id) {
-            const merged = { ...(profileCache.get(profile.id) || {}), ...profile };
+            const current = profileCache.get(profile.id);
+            const currentVersion = Number(current?.updatedAt || current?.createdAt || 0);
+            const incomingVersion = Number(profile.updatedAt || profile.createdAt || 0);
+            if (current && currentVersion && incomingVersion && incomingVersion < currentVersion) return current;
+            const merged = { ...(current || {}), ...profile };
             profileCache.set(profile.id, merged);
+            if (profileCache.size > 250) {
+                const removableId = Array.from(profileCache.keys()).find((id) => id !== socialProfile?.id && !socialFriends.some((friend) => friend.id === id));
+                if (removableId) profileCache.delete(removableId);
+            }
             return merged;
         }
         return profile;
@@ -867,11 +976,22 @@
         renderActiveChannel();
     }
 
+    function preparePrivateMessage(name) {
+        const recipient = String(name || '').replace(/:$/, '').trim();
+        if (!recipient || recipient === username || activeChannel === 'direct') return false;
+        const draft = inputField.value.replace(/^\([^)]+\)\s*/, '');
+        inputField.value = `(${recipient}) ${draft}`;
+        inputField.focus();
+        onInputChange();
+        return true;
+    }
+
     function renderSocialSidebar() {
         const profile = document.getElementById('nx-social-profile');
         const friends = document.getElementById('nx-friend-list');
         const requests = document.getElementById('nx-request-list');
         if (!profile || !friends || !requests) return;
+        if (socialProfile) socialProfile = cacheProfile(socialProfile);
         profile.innerHTML = socialProfile
             ? `${avatarMarkup(socialProfile)}<span><strong>${escapeHtml(socialProfile.username)}</strong><button id="nx-copy-code" title="Copy Nexus ID">${escapeHtml(socialProfile.friendCode)}</button></span>`
             : '<span class="nx-social-loading">Connecting Nexus ID…</span>';
@@ -930,7 +1050,7 @@
         div.dataset.profileId = profile.id || '';
         const meta = document.createElement('div');
         meta.className = 'nx-message-meta';
-        meta.insertAdjacentHTML('beforeend', avatarMarkup(profile, 'nx-avatar nx-avatar-message'));
+        meta.insertAdjacentHTML('beforeend', avatarMarkup(profile, 'nx-avatar nx-avatar-message nx-profile-trigger'));
         const author = document.createElement('strong');
         author.className = 'nx-profile-trigger';
         author.dataset.profileId = profile.id || '';
@@ -967,12 +1087,13 @@
     function renderActiveChannel() {
         if (!messageArea) return;
         messageArea.innerHTML = '';
+        const renderLimit = selectedPerformanceProfile().renderedMessages;
         const title = document.getElementById('nx-channel-title');
         const subtitle = document.getElementById('nx-channel-subtitle');
         if (activeChannel === 'game') {
             if (title) title.textContent = 'Match chat';
             if (subtitle) subtitle.textContent = gameId ? `Room ${gameId}` : 'Waiting for a match';
-            messageHistory.forEach((msg) => {
+            messageHistory.slice(-renderLimit).forEach((msg) => {
                 if (msg.system) {
                     const div = document.createElement('div'); div.className = 'system-msg'; div.textContent = msg.text; messageArea.appendChild(div);
                 } else addMessage(msg.author, msg.text, msg.isBlocked, msg.isMention, msg.isPrivate, msg.msgAuthorColor, msg.msgId, true, msg.authorKills || 0, msg.profile, msg.reactions);
@@ -981,12 +1102,12 @@
         } else if (activeChannel === 'global') {
             if (title) title.textContent = 'Global';
             if (subtitle) subtitle.textContent = 'Everyone connected to Nexus';
-            globalMessageHistory.forEach((message) => renderSocialMessage(message, false));
+            globalMessageHistory.slice(-renderLimit).forEach((message) => renderSocialMessage(message, false));
             inputField.placeholder = 'Message #global';
         } else if (selectedFriend) {
             if (title) title.textContent = selectedFriend.username;
             if (subtitle) subtitle.textContent = selectedFriend.online ? 'Online now' : 'Offline · messages are saved';
-            (directMessageHistory.get(selectedFriend.id) || []).forEach((message) => renderSocialMessage(message, true));
+            (directMessageHistory.get(selectedFriend.id) || []).slice(-renderLimit).forEach((message) => renderSocialMessage(message, true));
             inputField.placeholder = `Message ${selectedFriend.username}`;
         }
         const typing = document.getElementById('nx-typing');
@@ -1092,6 +1213,7 @@
         if (scrollAnimationId) cancelAnimationFrame(scrollAnimationId);
         userScrolled = false;
         updateScrollButton();
+        if (config.performanceMode === 'low-power' || isDim || document.hidden) smooth = false;
         if (!smooth) { messageArea.scrollTop = messageArea.scrollHeight; return; }
         const target = messageArea.scrollHeight;
         const start = messageArea.scrollTop;
@@ -1112,7 +1234,21 @@
         scrollToBottomBtn.classList.toggle('hidden', isAtBottom());
     }
 
+    function showSettingsPage(pageName = 'account') {
+        if (!settingsPanel) return;
+        settingsPanel.style.display = 'block';
+        document.querySelectorAll('.nx-settings-nav button').forEach((button) => button.classList.toggle('active', button.dataset.settingsPage === pageName));
+        document.querySelectorAll('.nx-settings-page').forEach((page) => page.classList.toggle('active', page.dataset.page === pageName));
+        resetIdleTimer();
+        clearIdle();
+        if (isDim) { isDim = false; applyDim(false); }
+        refreshSettingsIdentity();
+        refreshSettingsDiagnostics();
+        if (pageName === 'performance') refreshPerformanceDetails();
+    }
+
     function createChatUI() {
+        document.getElementById('nx-optimizer')?.remove();
         chatContainer = document.createElement('div');
         chatContainer.id = 'nx-chat';
         chatContainer.innerHTML = `
@@ -1149,6 +1285,9 @@
                     <button id="nx-unread-badge" style="display:none;">0</button>
                     <button id="nx-dnd-btn" title="Do Not Disturb">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0"/></svg>
+                    </button>
+                    <button id="nx-opt-btn" title="Performance optimizer">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h8l-1 8 10-12h-8l1-8z"/></svg>
                     </button>
                     <button id="nx-dim-btn" title="Dim mode (${config.dimKeyChar})">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
@@ -1290,7 +1429,24 @@
             }
             #nx-chat.nx-hidden { opacity: 0; transform: scale(0.9); pointer-events: none; }
             #nx-chat.idle  { opacity: 0.15; }
-            #nx-chat.dim   { opacity: 0.05; }
+            html.nx-chat-dimmed #nx-chat,
+            html.nx-chat-dimmed #nx-toggle,
+            html.nx-chat-dimmed #nx-profile-popover { opacity:0 !important; visibility:hidden !important; pointer-events:none !important; }
+            html[data-nexus-performance="balanced"] #nx-chat,
+            html[data-nexus-performance="low-power"] #nx-chat { backdrop-filter:none; -webkit-backdrop-filter:none; box-shadow:0 14px 42px rgba(0,0,0,.46); }
+            html[data-nexus-performance="low-power"] #nx-chat { box-shadow:0 8px 24px rgba(0,0,0,.38); }
+            html[data-nexus-performance="low-power"] #nx-chat *,
+            html[data-nexus-performance="low-power"] #nx-toggle { animation:none !important; transition-duration:.01ms !important; }
+            html[data-nexus-performance="low-power"] .fire-gif { display:none !important; }
+            #nx-optimization-loader { --nx-opt-progress:0%; position:fixed; inset:0; z-index:2147483647; display:grid; place-items:center; background:rgba(8,11,7,.96); color:#f4eedb; font-family:Inter,Segoe UI,system-ui,sans-serif; opacity:1; transition:opacity .28s ease; }
+            #nx-optimization-loader.done { opacity:0; pointer-events:none; }
+            .nx-opt-loader-card { width:min(360px,calc(100vw - 42px)); padding:24px; border:1px solid rgba(242,201,76,.22); border-radius:18px; background:#141911; box-shadow:0 24px 70px rgba(0,0,0,.6); text-align:center; }
+            .nx-opt-loader-mark { width:48px; height:48px; margin:0 auto 14px; display:grid; place-items:center; border-radius:14px; background:#f2c94c; color:#15190f; font-size:20px; font-weight:900; }
+            .nx-opt-loader-card strong { display:block; font-size:15px; }
+            .nx-opt-loader-card p { min-height:18px; margin:9px 0; color:#aab29a; font-size:11px; }
+            .nx-opt-loader-track { height:4px; overflow:hidden; border-radius:6px; background:#272d21; }
+            .nx-opt-loader-track i { display:block; width:var(--nx-opt-progress); height:100%; background:linear-gradient(90deg,#718552,#f2c94c); transition:width .18s ease; }
+            .nx-opt-loader-card small { display:block; margin-top:8px; color:#78816f; font-size:9px; }
             #nx-sidebar { width: 230px; flex: 0 0 230px; display: flex; flex-direction: column; background: var(--nx-sidebar-bg); border-right: 1px solid var(--nx-glass-border); overflow: hidden; transition: width .35s cubic-bezier(.22,1,.36,1), flex-basis .35s cubic-bezier(.22,1,.36,1), opacity .2s; }
             #nx-main { min-width: 0; flex: 1; display: flex; flex-direction: column; position: relative; }
             #nx-chat.social-collapsed { width: 390px !important; }
@@ -1530,6 +1686,8 @@
             #nx-settings input, #nx-settings select, #nx-settings textarea { width:100%; margin-top:5px; background:var(--nx-input-bg); border:1px solid var(--nx-input-border); color:var(--nx-text); padding:8px 9px; font-size:11px; border-radius:9px; box-sizing:border-box; outline:none; }
             #nx-settings textarea { min-height:68px; resize:vertical; font-family:inherit; }
             #nx-settings input:focus, #nx-settings select:focus, #nx-settings textarea:focus { border-color:var(--nx-accent); box-shadow:0 0 0 3px color-mix(in srgb,var(--nx-accent) 12%,transparent); }
+            .nx-readonly-value { margin-top:5px; padding:9px 10px; border:1px solid var(--nx-input-border); border-radius:9px; background:color-mix(in srgb,var(--nx-input-bg) 72%,transparent); color:var(--nx-text); font-weight:700; }
+            .nx-readonly-note { display:block; margin-top:5px; color:var(--nx-text-secondary); font-size:9px; line-height:1.35; }
             .nx-account-card { display:flex; align-items:center; justify-content:space-between; gap:10px; }
             .nx-account-id { font:700 12px ui-monospace,SFMono-Regular,Consolas,monospace; color:var(--nx-text); }
             .nx-account-hint, .nx-settings-note { color:var(--nx-text-secondary); font-size:10px; line-height:1.45; }
@@ -1622,16 +1780,13 @@
         scrollToBottomBtn.addEventListener('click', () => { userScrolled = false; scrollToBottom(true); });
 
         document.getElementById('nx-dnd-btn').addEventListener('click', toggleDnd);
+        document.getElementById('nx-opt-btn').addEventListener('click', () => showSettingsPage('performance'));
         document.getElementById('nx-dim-btn').addEventListener('click', toggleDim);
         document.getElementById('nx-min-btn').addEventListener('click', toggleMinimize);
         document.getElementById('nx-cfg-btn').addEventListener('click', () => {
             const opening = settingsPanel.style.display !== 'block';
-            settingsPanel.style.display = opening ? 'block' : 'none';
-            if (opening) {
-                resetIdleTimer(); clearIdle();
-                if (isDim) { isDim = false; applyDim(false); }
-                refreshSettingsIdentity(); refreshSettingsDiagnostics();
-            } else startIdleTimer();
+            if (opening) showSettingsPage('account');
+            else { settingsPanel.style.display = 'none'; startIdleTimer(); }
         });
         document.querySelectorAll('.nx-channel').forEach((button) => button.addEventListener('click', () => setActiveChannel(button.dataset.channel)));
         document.getElementById('nx-add-friend-toggle').addEventListener('click', () => {
@@ -1712,17 +1867,6 @@
         messageArea.addEventListener('click', (e) => {
             const target = e.target;
 
-            if (target.tagName === 'STRONG') {
-                if (activeChannel === 'direct' || target.classList.contains('nx-profile-trigger')) return;
-                let name = target.textContent;
-                if (name.endsWith(':')) name = name.slice(0, -1);
-                name = name.trim();
-                if (name === username) return;
-                inputField.value = `(${name}) ${inputField.value}`;
-                inputField.focus();
-                return;
-            }
-
             const reactionBtn = target.closest('.reaction-btn');
             if (reactionBtn) {
                 const msgDiv = reactionBtn.closest('.user-msg');
@@ -1757,6 +1901,15 @@
                     renderActiveChannel();
                 }
                 return;
+            }
+
+            const profileTrigger = target.closest('.nx-profile-trigger');
+            if (profileTrigger) {
+                const message = profileTrigger.closest('.user-msg, .blocked-placeholder');
+                const profileId = profileTrigger.dataset.profileId || message?.dataset.profileId;
+                const profile = profileId ? profileCache.get(profileId) : null;
+                const author = profile?.username || message?.dataset.author || profileTrigger.textContent;
+                if (preparePrivateMessage(author)) return;
             }
         });
 
@@ -1793,8 +1946,20 @@
 
     function toggleDim() { isDim = !isDim; applyDim(isDim); }
     function applyDim(state) {
-        if (state) { chatContainer.classList.add('dim'); chatContainer.classList.remove('idle'); isIdle = false; }
-        else { chatContainer.classList.remove('dim'); if (!isInputFocused && !isHovering) startIdleTimer(); }
+        isDim = Boolean(state);
+        document.documentElement.classList.toggle('nx-chat-dimmed', isDim);
+        if (isDim) {
+            resetIdleTimer();
+            clearIdle();
+            stopTyping();
+            if (inputField) inputField.blur();
+            if (settingsPanel) settingsPanel.style.display = 'none';
+            hideProfilePopover(0);
+            if (scrollAnimationId) { cancelAnimationFrame(scrollAnimationId); scrollAnimationId = null; }
+        } else {
+            renderActiveChannel();
+            if (!isInputFocused && !isHovering) startIdleTimer();
+        }
         const btn = document.getElementById('nx-dim-btn');
         if (btn) {
             btn.classList.toggle('active', isDim);
@@ -1833,7 +1998,11 @@
         const resolvedProfile = cacheProfile(profile) || { id: '', username: author, avatarUrl: '', bio: '' };
         isBlocked = author !== username && isUserBlocked(resolvedProfile, author);
         const msgObj = { author, authorId: resolvedProfile.id, profile: resolvedProfile, reactions: initialReactions || {}, text, isBlocked, isMention, isPrivate, msgAuthorColor, msgId, authorKills };
-        if (!skipSave) { messageHistory.push(msgObj); saveHistory(); }
+        if (!skipSave) {
+            messageHistory.push(msgObj);
+            if (messageHistory.length > 100) messageHistory = messageHistory.slice(-100);
+            saveHistory();
+        }
         if (isBlocked) {
             const placeholder = document.createElement('div');
             placeholder.className = 'blocked-placeholder';
@@ -1994,17 +2163,26 @@
                     <section class="nx-settings-page active" data-page="account"><h3 class="nx-settings-page-title">Your Nexus account</h3><p class="nx-settings-page-copy">Your Nexus ID comes from a private recovery key and stays the same when your game name changes.</p><div class="nx-settings-section"><h4>Identity</h4><div class="nx-account-card"><div><div id="cfg-nexus-id" class="nx-account-id">Connecting…</div><div class="nx-account-hint">Share only this public ID when adding friends.</div></div><button id="cfg-copy-id" class="nx-secondary-btn">Copy ID</button></div></div><div class="nx-settings-section"><h4>Public profile</h4><label>Avatar image URL<input id="cfg-avatar-url" type="url" maxlength="500" placeholder="https://example.com/avatar.png" value="${safeAvatar}"></label><label>Bio<textarea id="cfg-bio" maxlength="160" placeholder="Tell other survivors about yourself">${safeBio}</textarea></label><button id="cfg-save-profile">Save profile</button></div><div class="nx-settings-section"><h4>Recovery</h4><div class="nx-recovery-row"><input id="cfg-recovery-key" type="password" placeholder="Paste an NXR recovery key"><button id="cfg-import-key">Restore</button><button id="cfg-copy-key" class="nx-secondary-btn">Copy key</button></div><small>Keep this key private. It restores the exact same account in another browser or game domain.</small></div></section>
                     <section class="nx-settings-page" data-page="appearance"><h3 class="nx-settings-page-title">Appearance</h3><p class="nx-settings-page-copy">Each theme uses a deliberate color harmony with readable contrast.</p><div class="nx-theme-grid"><button class="nx-theme-card ${config.theme==='dark'?'active':''}" data-theme="dark" style="--swatch-a:#1c2518;--swatch-b:#f2c94c"><span class="nx-theme-swatch"></span><span><strong>Survival</strong><small>Olive + amber</small></span></button><button class="nx-theme-card ${config.theme==='light'?'active':''}" data-theme="light" style="--swatch-a:#f3eedb;--swatch-b:#657747"><span class="nx-theme-swatch"></span><span><strong>Daylight</strong><small>Cream + forest</small></span></button><button class="nx-theme-card ${config.theme==='midnight'?'active':''}" data-theme="midnight" style="--swatch-a:#0a0c28;--swatch-b:#a88cff"><span class="nx-theme-swatch"></span><span><strong>Midnight</strong><small>Violet + cyan</small></span></button><button class="nx-theme-card ${config.theme==='ocean'?'active':''}" data-theme="ocean" style="--swatch-a:#04283a;--swatch-b:#35dcc8"><span class="nx-theme-swatch"></span><span><strong>Ocean</strong><small>Turquoise + coral</small></span></button><button class="nx-theme-card ${config.theme==='ember'?'active':''}" data-theme="ember" style="--swatch-a:#35140d;--swatch-b:#ff9a44"><span class="nx-theme-swatch"></span><span><strong>Ember</strong><small>Orange + teal</small></span></button><button class="nx-theme-card ${config.theme==='orchid'?'active':''}" data-theme="orchid" style="--swatch-a:#32103a;--swatch-b:#ea7dff"><span class="nx-theme-swatch"></span><span><strong>Orchid</strong><small>Magenta + mint</small></span></button></div><div class="nx-settings-section"><h4>Chat window</h4><div class="nx-settings-grid"><label>Display name<input type="text" id="cfg-name" value="${safeName}" maxlength="15"></label><label>Author color<input type="color" id="cfg-authorcolor" value="${hslToHex(authorColor)}"></label><label>Size<select id="cfg-size"><option value="compact" ${config.size==='compact'?'selected':''}>Compact</option><option value="medium" ${config.size==='medium'?'selected':''}>Medium</option><option value="large" ${config.size==='large'?'selected':''}>Large</option></select></label><label>Position<select id="cfg-pos"><option value="top-left" ${config.position==='top-left'?'selected':''}>Top left</option><option value="top-right" ${config.position==='top-right'?'selected':''}>Top right</option><option value="bottom-left" ${config.position==='bottom-left'?'selected':''}>Bottom left</option><option value="bottom-right" ${config.position==='bottom-right'?'selected':''}>Bottom right</option></select></label><label>Volume<input type="range" id="cfg-volume" min="0" max="1" step="0.05" value="${config.volume}"></label></div></div></section>
                     <section class="nx-settings-page" data-page="chat"><h3 class="nx-settings-page-title">Chat</h3><p class="nx-settings-page-copy">Control shortcuts, alerts, and window behavior.</p><div class="nx-settings-section"><h4>Keys and timing</h4><div class="nx-settings-grid"><label>Open chat<button id="cfg-key" class="nx-secondary-btn">${config.activationKeyChar}</button></label><label>Dim chat<button id="cfg-dim-key" class="nx-secondary-btn">${config.dimKeyChar}</button></label><label>Hide after (seconds)<input type="number" id="cfg-idle" value="${config.idleTimeout}" min="1" max="30"></label></div></div><div class="nx-settings-section"><h4>Notifications</h4><label class="nx-settings-toggle">Discord reminders<input type="checkbox" id="cfg-discord-reminder" ${config.discordReminder?'checked':''}></label><label class="nx-settings-toggle">Do not disturb<input type="checkbox" id="cfg-dnd" ${config.dndMode?'checked':''}></label></div></section>
-                    <section class="nx-settings-page" data-page="performance"><h3 class="nx-settings-page-title">Performance</h3><p class="nx-settings-page-copy">Only changes options that Survev and Resurviv actually support.</p><div class="nx-settings-section"><h4>Game preset</h4><label>Mode<select id="cfg-performance"><option value="native" ${config.performanceMode==='native'?'selected':''}>Native settings</option><option value="balanced" ${config.performanceMode==='balanced'?'selected':''}>Balanced</option><option value="low-power" ${config.performanceMode==='low-power'?'selected':''}>Low power</option></select></label><small class="nx-settings-note">Adjusts textures, screen shake, interpolation, and local rotation. Reload the game to apply every change.</small></div></section>
+                    <section class="nx-settings-page" data-page="performance"><h3 class="nx-settings-page-title">Performance optimizer</h3><p class="nx-settings-page-copy">Applies verified Survev and Resurviv settings while reducing Nexus rendering work immediately.</p><div class="nx-settings-section"><div class="nx-account-card"><div><h4 id="cfg-performance-state">Optimizer ready</h4><small id="cfg-performance-summary" class="nx-settings-note">Choose a preset to see its details.</small></div><button id="cfg-apply-performance">Apply now</button></div><label>Preset<select id="cfg-performance"><option value="native" ${config.performanceMode==='native'?'selected':''}>Native</option><option value="balanced" ${config.performanceMode==='balanced'?'selected':''}>Balanced</option><option value="low-power" ${config.performanceMode==='low-power'?'selected':''}>Low power</option></select></label><div class="nx-status-grid" style="margin-top:10px"><div class="nx-status-card"><span>Textures</span><strong id="cfg-performance-textures">—</strong></div><div class="nx-status-card"><span>Screen shake</span><strong id="cfg-performance-shake">—</strong></div><div class="nx-status-card"><span>Interpolation</span><strong id="cfg-performance-interpolation">—</strong></div><div class="nx-status-card"><span>Rendered messages</span><strong id="cfg-performance-messages">—</strong></div></div><small class="nx-settings-note">Nexus effects change live. Verified game preferences are saved immediately and are also used by the next match created by the game.</small></div></section>
                     <section class="nx-settings-page" data-page="diagnostics"><h3 class="nx-settings-page-title">Diagnostics</h3><p class="nx-settings-page-copy">Check whether Nexus ID and Global chat are ready.</p><div class="nx-status-grid"><div class="nx-status-card"><span>Server</span><strong id="cfg-status-server">Checking…</strong></div><div class="nx-status-card"><span>Nexus ID</span><strong id="cfg-status-id">Checking…</strong></div><div class="nx-status-card"><span>Client</span><strong>v${EXT_VERSION}</strong></div></div><div class="nx-settings-section"><h4>Connection</h4><div id="cfg-status-detail" class="nx-settings-note">Waiting for socket information…</div><button id="cfg-reconnect" style="margin-top:10px">Reconnect now</button></div></section>
                 </div>
             </div>
         `;
+
+        const displayNameInput = document.getElementById('cfg-name');
+        const displayNameLabel = displayNameInput?.closest('label');
+        if (displayNameLabel) {
+            displayNameLabel.innerHTML = `Game name<div class="nx-readonly-value" role="textbox" aria-readonly="true">${safeName}</div><small class="nx-readonly-note">Change your name in the game. Nexus follows it automatically.</small>`;
+        }
+        const renderedMessagesCard = document.getElementById('cfg-performance-messages')?.closest('.nx-status-card');
+        if (renderedMessagesCard) renderedMessagesCard.insertAdjacentHTML('beforebegin', '<div class="nx-status-card"><span>Client rotation</span><strong id="cfg-performance-rotation">—</strong></div>');
 
         document.getElementById('nx-settings-close').addEventListener('click', () => { settingsPanel.style.display = 'none'; });
         document.querySelectorAll('.nx-settings-nav button').forEach((button) => button.addEventListener('click', () => {
             document.querySelectorAll('.nx-settings-nav button').forEach((item) => item.classList.toggle('active', item === button));
             document.querySelectorAll('.nx-settings-page').forEach((page) => page.classList.toggle('active', page.dataset.page === button.dataset.settingsPage));
             if (button.dataset.settingsPage === 'diagnostics') refreshSettingsDiagnostics();
+            if (button.dataset.settingsPage === 'performance') refreshPerformanceDetails();
         }));
         document.getElementById('cfg-copy-id').addEventListener('click', async function() {
             if (!socialProfile || !socialProfile.friendCode) return;
@@ -2030,12 +2208,6 @@
             if (chatSocket) chatSocket.disconnect();
             chatSocket = null; connectToChat(); addSystemMessage('Nexus account restored. Reconnecting…');
         });
-        document.getElementById('cfg-name').addEventListener('change', function() {
-            const newName = this.value.trim().substring(0,15);
-            if (!newName || newName === username) { this.value = username; return; }
-            if (chatSocket && chatSocket.connected) chatSocket.emit('change-username', newName);
-            else { username = newName; sessionStorage.setItem('nexus_username', username); authorColor = getUserColor(username); localStorage.setItem('nexus_authorColor', authorColor); }
-        });
         document.getElementById('cfg-authorcolor').addEventListener('input', function() { authorColor = this.value; localStorage.setItem('nexus_authorColor', authorColor); });
         document.getElementById('cfg-size').addEventListener('change', function() { config.size = this.value; applySize(); saveConfig(); });
         document.getElementById('cfg-pos').addEventListener('change', function() { config.position = this.value; applyPosition(); saveConfig(); });
@@ -2058,7 +2230,20 @@
             applyTheme(config.theme); saveConfig();
             document.querySelectorAll('.nx-theme-card').forEach((item) => item.classList.toggle('active', item === button));
         }));
-        document.getElementById('cfg-performance').addEventListener('change', function() { config.performanceMode = this.value; applyPerformanceMode(config.performanceMode); saveConfig(); addSystemMessage('Performance preset saved. Reload the game to apply every change.'); });
+        const applySelectedPerformance = async () => {
+            const select = document.getElementById('cfg-performance');
+            const button = document.getElementById('cfg-apply-performance');
+            select.disabled = true;
+            button.disabled = true;
+            config.performanceMode = select.value;
+            saveConfig();
+            await applyPerformanceMode(config.performanceMode, { showProgress: true });
+            select.disabled = false;
+            button.disabled = false;
+            addChannelNotice(`${selectedPerformanceProfile().label} optimization applied without reloading.`);
+        };
+        document.getElementById('cfg-performance').addEventListener('change', applySelectedPerformance);
+        document.getElementById('cfg-apply-performance').addEventListener('click', applySelectedPerformance);
         document.getElementById('cfg-reconnect').addEventListener('click', function() {
             lastConnectionError = '';
             if (chatSocket) chatSocket.disconnect();
@@ -2067,6 +2252,7 @@
         });
         refreshSettingsIdentity();
         refreshSettingsDiagnostics();
+        refreshPerformanceDetails();
     }
 
     function refreshSettingsIdentity() {
@@ -2129,6 +2315,11 @@
         if (e.key === config.dimKeyChar) { e.preventDefault(); e.stopPropagation(); toggleDim(); }
     }
     document.addEventListener('keydown', globalKeyHandler, true);
+    window.addEventListener('pagehide', () => {
+        if (historySaveTimer) clearTimeout(historySaveTimer);
+        flushHistory();
+        if (killLeaderObserver) killLeaderObserver.disconnect();
+    });
 
     function createOnboardingOverlay() {
         if (onboardingOverlay) return;
@@ -2190,9 +2381,13 @@
         const ctx = canvas.getContext('2d');
         canvas.width = window.innerWidth; canvas.height = window.innerHeight;
         const particles = [];
-        for (let i = 0; i < 150; i++) particles.push({ x:Math.random()*canvas.width, y:Math.random()*canvas.height, radius:Math.random()*3+1, speedX:Math.random()*0.8-0.4, speedY:Math.random()*0.8-0.4, alpha:Math.random()*0.6+0.3 });
-        function animateParticles() {
+        const particleCount = selectedPerformanceProfile().particles;
+        for (let i = 0; i < particleCount; i++) particles.push({ x:Math.random()*canvas.width, y:Math.random()*canvas.height, radius:Math.random()*2+1, speedX:Math.random()*0.6-0.3, speedY:Math.random()*0.6-0.3, alpha:Math.random()*0.45+0.2 });
+        let lastParticleFrame = 0;
+        function animateParticles(now = 0) {
             if (!onboardingOverlay) return;
+            if (now - lastParticleFrame < 33) { requestAnimationFrame(animateParticles); return; }
+            lastParticleFrame = now;
             ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.fillStyle = '#b71c1c';
             for (const p of particles) {
                 p.x += p.speedX; p.y += p.speedY;
@@ -2202,7 +2397,7 @@
             }
             requestAnimationFrame(animateParticles);
         }
-        animateParticles();
+        if (particles.length) requestAnimationFrame(animateParticles);
     }
 
     async function checkForUpdate() {

@@ -20,6 +20,7 @@ function publicUser(row) {
     avatarUrl: String(row.avatar_url || ''),
     bio: String(row.bio || ''),
     createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at || row.created_at),
   };
 }
 
@@ -154,7 +155,7 @@ class TursoSocialStore {
     });
     return {
       token,
-      user: { id: identity.id, username, friendCode, avatarUrl: '', bio: '', createdAt: now },
+      user: { id: identity.id, username, friendCode, avatarUrl: '', bio: '', createdAt: now, updatedAt: now },
     };
   }
 
@@ -208,7 +209,8 @@ class TursoSocialStore {
       this.client.execute({
         sql: `SELECT r.id, r.created_at, u.id AS from_id, u.username AS from_username,
                      u.friend_code AS from_friend_code, u.avatar_url AS from_avatar_url,
-                     u.bio AS from_bio, u.created_at AS from_created_at
+                     u.bio AS from_bio, u.created_at AS from_created_at,
+                     u.updated_at AS from_updated_at
               FROM friend_requests r
               JOIN users u ON u.id = r.from_id
               WHERE r.to_id = ? AND r.status = 'pending'
@@ -219,7 +221,7 @@ class TursoSocialStore {
         sql: `SELECT m.id, m.author_id, m.author, m.text, m.timestamp,
                      u.username AS profile_username, u.friend_code AS profile_friend_code,
                      u.avatar_url AS profile_avatar_url, u.bio AS profile_bio,
-                     u.created_at AS profile_created_at
+                     u.created_at AS profile_created_at, u.updated_at AS profile_updated_at
               FROM global_messages m LEFT JOIN users u ON u.id = m.author_id
               ORDER BY m.timestamp DESC, m.rowid DESC LIMIT ?`,
         args: [MAX_GLOBAL_HISTORY],
@@ -245,6 +247,7 @@ class TursoSocialStore {
         avatarUrl: String(row.from_avatar_url || ''),
         bio: String(row.from_bio || ''),
         createdAt: Number(row.from_created_at),
+        updatedAt: Number(row.from_updated_at || row.from_created_at),
       },
       createdAt: Number(row.created_at),
     }));
@@ -263,6 +266,7 @@ class TursoSocialStore {
         avatarUrl: String(row.profile_avatar_url || ''),
         bio: String(row.profile_bio || ''),
         createdAt: Number(row.profile_created_at),
+        updatedAt: Number(row.profile_updated_at || row.profile_created_at),
       } : null;
       return {
         id: String(row.id),
