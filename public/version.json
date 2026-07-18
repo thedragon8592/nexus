@@ -1,6 +1,9 @@
 {
-  "version": "3.4.0",
+  "version": "3.4.1",
   "changes": [
+    "Distribution-aware update notifications for extension and Tampermonkey users",
+    "Extension updates now open the official Nexus download website",
+    "Tampermonkey updates now open the official Greasy Fork listing",
     "Complete command support in Match and Global",
     "Channel-correct command results, global polls, pins, and statistics",
     "Smart mention suggestions in Match, Global, and friend messages",
@@ -10,6 +13,7 @@
     "Profiles, friends, private messages, reactions, typing, and user blocking"
   ],
   "bugs": [
+    "Fixed the generic update button sending every installation to the same destination",
     "Scoped friend-message mentions to the conversation currently open",
     "Fixed private-message selection and avatar refresh races",
     "Kept command output inside the originating channel",

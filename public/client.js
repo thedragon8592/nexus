@@ -4,8 +4,16 @@
     window.__nexusChatLoaded = true;
     window.__nexusIntegratedOptimizer = true;
 
-    const EXT_VERSION = '3.4.0';
-    const DOWNLOAD_URL = 'https://wnexuschat.netlify.app';
+    const EXT_VERSION = '3.4.1';
+    const WEBSITE_URL = 'https://wnexuschat.netlify.app';
+    const GREASYFORK_URL = 'https://greasyfork.org/es/scripts/584741-nexus-chat';
+    const bootstrap = window.__NEXUS_BOOTSTRAP__ || {};
+    const hasExtensionRuntime = typeof chrome !== 'undefined' && chrome.runtime && Boolean(chrome.runtime.id);
+    const CLIENT_DISTRIBUTION = bootstrap.clientType === 'userscript' || (!hasExtensionRuntime && Boolean(bootstrap.serverUrl))
+        ? 'userscript'
+        : (hasExtensionRuntime ? 'extension' : 'web');
+    const INSTALLED_VERSION = bootstrap.installedVersion
+        || (CLIENT_DISTRIBUTION === 'userscript' ? '3.4.0' : EXT_VERSION);
     const SERVER_URL    = window.__NEXUS_BOOTSTRAP__ && window.__NEXUS_BOOTSTRAP__.serverUrl
         ? window.__NEXUS_BOOTSTRAP__.serverUrl
         : 'https://nexus-chat-free.onrender.com';
@@ -2578,7 +2586,8 @@
             const res = await fetch(`${SERVER_URL}/version.json?_=${Date.now()}`);
             if (!res.ok) return;
             const data = await res.json();
-            if (compareVersions(data.version, EXT_VERSION) > 0) {
+            if (compareVersions(data.version, INSTALLED_VERSION) > 0
+                && sessionStorage.getItem('nexus_update_dismissed') !== data.version) {
                 showUpdateOverlay(data);
             }
         } catch(e) {}
@@ -2586,6 +2595,14 @@
 
     function showUpdateOverlay(data) {
         if (document.getElementById('nx-update-overlay')) return;
+
+        const isUserscript = CLIENT_DISTRIBUTION === 'userscript';
+        const updateUrl = isUserscript ? GREASYFORK_URL : WEBSITE_URL;
+        const updateTitle = isUserscript ? 'Tampermonkey update available' : 'Extension update available';
+        const updateCopy = isUserscript
+            ? 'Tampermonkey normally updates Nexus automatically. If it has not updated yet, open Greasy Fork and press Update or Reinstall.'
+            : 'Open the official Nexus website to download the latest extension package, then replace or reload your installed extension.';
+        const updateButton = isUserscript ? 'Update on Greasy Fork' : 'Open update page';
 
         const overlay = document.createElement('div');
         overlay.id = 'nx-update-overlay';
@@ -2595,15 +2612,17 @@
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>
                 <img src="${LOGO_URL}" alt="Nexus Chat" class="nx-logo-img">
-                <h1 class="nx-title-neon">Update available</h1>
+                <span class="nx-update-kicker">NEXUS RELEASE</span>
+                <h1 class="nx-title-neon">${updateTitle}</h1>
                 <p class="nx-version">Version ${escapeHtml(String(data.version || ''))}</p>
+                <p class="nx-update-copy">${updateCopy}</p>
                 <div class="nx-changelog">
                     <h3>New:</h3>
                     <ul>${(data.changes || []).map(c => `<li>${escapeHtml(String(c))}</li>`).join('')}</ul>
                     <h3>Fixed:</h3>
                     <ul>${(data.bugs || []).map(b => `<li>${escapeHtml(String(b))}</li>`).join('')}</ul>
                 </div>
-                <button id="nx-update-download">Download update</button>
+                <button id="nx-update-download">${updateButton}</button>
             </div>
         `;
 
@@ -2620,14 +2639,14 @@
             }
             @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
             #nx-update-box {
-                background: var(--nx-bg, rgba(18, 18, 24, 0.95));
-                border: 1px solid var(--nx-glass-border, rgba(255,255,255,0.1));
+                background: linear-gradient(150deg, rgba(28,34,24,.98), rgba(12,15,11,.98));
+                border: 1px solid rgba(242,201,76,.28);
                 border-radius: 20px;
                 padding: 40px;
                 text-align: center;
                 max-width: 450px;
                 width: 90%;
-                box-shadow: 0 20px 60px rgba(0,0,0,0.8), 0 0 40px rgba(183,28,28,0.3);
+                box-shadow: 0 24px 70px rgba(0,0,0,.82), 0 0 42px rgba(113,133,82,.2);
                 position: relative;
                 color: var(--nx-text, #f0f0f0);
                 font-family: 'Segoe UI', 'Inter', system-ui, sans-serif;
@@ -2638,37 +2657,43 @@
                 transition: color 0.2s;
             }
             #nx-update-close:hover { color: #fff; }
-            .nx-logo-img { width: 80px; height: 80px; margin-bottom: 20px; filter: drop-shadow(0 0 10px #b71c1c); }
+            .nx-logo-img { width: 76px; height: 76px; margin-bottom: 14px; filter: drop-shadow(0 0 14px rgba(242,201,76,.35)); }
+            .nx-update-kicker { display:block; color:#aab29a; font-size:11px; font-weight:800; letter-spacing:.2em; margin-bottom:8px; }
             .nx-title-neon {
                 font-size: 28px; font-weight: 800;
-                color: #ff4444;
-                text-shadow: 0 0 10px #ff4444, 0 0 20px #b71c1c;
+                color: #f4eedb;
+                text-shadow: 0 0 18px rgba(242,201,76,.2);
                 margin: 0 0 10px;
             }
-            .nx-version { font-size: 18px; color: #ccc; margin: 0 0 20px; }
+            .nx-version { font-size: 15px; color: #f2c94c; margin: 0 0 12px; font-weight:700; }
+            .nx-update-copy { color:#c9cfbd; font-size:14px; line-height:1.55; margin:0 auto 18px; max-width:390px; }
             .nx-changelog { text-align: left; margin: 20px 0; font-size: 14px; }
-            .nx-changelog h3 { color: #ff4444; margin-top: 15px; }
+            .nx-changelog h3 { color: #f2c94c; margin-top: 15px; }
             .nx-changelog ul { padding-left: 20px; }
             .nx-changelog li { margin-bottom: 6px; }
             #nx-update-download {
-                background: linear-gradient(135deg, #b71c1c, #ff4444);
-                border: none; color: white; font-weight: bold;
+                background: linear-gradient(135deg, #718552, #f2c94c);
+                border: none; color: #11150e; font-weight: 800;
                 padding: 14px 28px; border-radius: 10px;
                 cursor: pointer; font-size: 16px;
-                box-shadow: 0 0 20px rgba(183,28,28,0.5);
+                box-shadow: 0 0 22px rgba(242,201,76,.24);
                 transition: transform 0.2s, box-shadow 0.2s;
                 margin-top: 10px;
             }
             #nx-update-download:hover {
                 transform: scale(1.05);
-                box-shadow: 0 0 30px rgba(255,68,68,0.7);
+                box-shadow: 0 0 30px rgba(242,201,76,.4);
             }
         `;
         document.head.appendChild(style);
         document.body.appendChild(overlay);
 
-        document.getElementById('nx-update-download').onclick = () => window.open(DOWNLOAD_URL, '_blank');
-        document.getElementById('nx-update-close').onclick = () => overlay.remove();
+        playSound('panel');
+        document.getElementById('nx-update-download').onclick = () => window.open(updateUrl, '_blank', 'noopener,noreferrer');
+        document.getElementById('nx-update-close').onclick = () => {
+            sessionStorage.setItem('nexus_update_dismissed', String(data.version || ''));
+            overlay.remove();
+        };
     }
 
     function compareVersions(v1, v2) {
