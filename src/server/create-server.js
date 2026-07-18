@@ -518,7 +518,17 @@ function createNexusServer(options = {}) {
         protocolError('NOT_FRIENDS', 'Direct messages are available between friends.');
         return;
       }
-      socket.emit('direct-history', { friendId, messages: history });
+      const readAt = Number(history[history.length - 1]?.timestamp || Date.now());
+      await socialStore.markDirectRead(currentAccountId, friendId, readAt);
+      socket.emit('direct-history', { friendId, messages: history, readAt });
+    });
+
+    socket.on('direct-read', async (payload) => {
+      if (!currentAccountId || !allow('direct-read', 30, 10_000)) return;
+      if (!payload || typeof payload.friendId !== 'string') return;
+      const readAt = Number(payload.readAt);
+      if (!Number.isFinite(readAt) || readAt <= 0) return;
+      await socialStore.markDirectRead(currentAccountId, payload.friendId, readAt);
     });
 
     socket.on('direct-message', async (payload) => {

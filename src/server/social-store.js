@@ -37,12 +37,13 @@ class SocialStore {
     this.ready = Promise.resolve();
     this.writeQueue = Promise.resolve();
     this.data = {
-      version: 2,
+      version: 3,
       users: {},
       friendRequests: {},
       globalMessages: [],
       globalReactions: {},
       directMessages: {},
+      directReadAt: {},
     };
     this.load();
   }
@@ -52,12 +53,13 @@ class SocialStore {
     const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
     if (!parsed || typeof parsed !== 'object') throw new Error('Invalid social data file.');
     this.data = {
-      version: 2,
+      version: 3,
       users: parsed.users || {},
       friendRequests: parsed.friendRequests || {},
       globalMessages: Array.isArray(parsed.globalMessages) ? parsed.globalMessages : [],
       globalReactions: parsed.globalReactions || {},
       directMessages: parsed.directMessages || {},
+      directReadAt: parsed.directReadAt || {},
     };
     Object.values(this.data.users).forEach((user) => {
       user.avatarUrl = typeof user.avatarUrl === 'string' ? user.avatarUrl : '';
@@ -162,7 +164,26 @@ class SocialStore {
     const user = this.data.users[userId];
     if (!user) return null;
     const friends = user.friendIds.map((id) => this.data.users[id]).filter(Boolean)
-      .map((friend) => ({ ...this.publicUser(friend), online: onlineIds.has(friend.id) }));
+      .map((friend) => {
+        const history = this.data.directMessages[this.conversationKey(userId, friend.id)] || [];
+        const lastMessage = history[history.length - 1] || null;
+        const readAt = Number(this.data.directReadAt[this.directReadKey(userId, friend.id)] || 0);
+        const unreadCount = history.reduce((count, message) => (
+          message.toId === userId && Number(message.timestamp) > readAt ? count + 1 : count
+        ), 0);
+        return {
+          ...this.publicUser(friend),
+          online: onlineIds.has(friend.id),
+          conversation: {
+            unreadCount,
+            lastMessageAt: Number(lastMessage?.timestamp || 0),
+            lastMessageText: lastMessage?.text || '',
+            lastMessageFromId: lastMessage?.fromId || '',
+          },
+        };
+      })
+      .sort((first, second) => Number(second.conversation.lastMessageAt) - Number(first.conversation.lastMessageAt)
+        || first.username.localeCompare(second.username));
     const requests = Object.values(this.data.friendRequests)
       .filter((request) => request.toId === userId && request.status === 'pending')
       .map((request) => ({ id: request.id, from: this.publicUser(this.data.users[request.fromId]), createdAt: request.createdAt }));
@@ -252,6 +273,8 @@ class SocialStore {
 
   conversationKey(firstId, secondId) { return [firstId, secondId].sort().join(':'); }
 
+  directReadKey(userId, friendId) { return `${userId}>${friendId}`; }
+
   directHistory(userId, friendId) {
     const user = this.data.users[userId];
     if (!user || !user.friendIds.includes(friendId)) return null;
@@ -269,6 +292,15 @@ class SocialStore {
     this.data.directMessages[key] = history.slice(-MAX_DIRECT_HISTORY);
     await this.save();
     return message;
+  }
+
+  async markDirectRead(userId, friendId, readAt = Date.now()) {
+    const user = this.data.users[userId];
+    if (!user || !user.friendIds.includes(friendId)) return false;
+    const key = this.directReadKey(userId, friendId);
+    this.data.directReadAt[key] = Math.max(Number(this.data.directReadAt[key] || 0), Number(readAt) || 0);
+    await this.save();
+    return true;
   }
 
   async addGlobalReaction(userId, messageId, emoji) {

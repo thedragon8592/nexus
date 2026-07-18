@@ -4,7 +4,7 @@
     window.__nexusChatLoaded = true;
     window.__nexusIntegratedOptimizer = true;
 
-    const EXT_VERSION = '3.4.1';
+    const EXT_VERSION = '3.5.0';
     const WEBSITE_URL = 'https://wnexuschat.netlify.app';
     const GREASYFORK_URL = 'https://greasyfork.org/es/scripts/584741-nexus-chat';
     const bootstrap = window.__NEXUS_BOOTSTRAP__ || {};
@@ -19,7 +19,6 @@
         : 'https://nexus-chat-free.onrender.com';
     const LOGO_URL      = 'https://i.ibb.co/FkXVWJnC/Chat-GPT-Image-26-jun-2026-19-06-21.png';
     const DISCORD_INVITE = 'https://discord.gg/rDJhfCTDqR';
-    const FIRE_GIF_URL  = 'https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExd2lyZTFqbGttcWh0d3cwenUwc2R2NzB6aGF4YWw4dzQ0b2FpMXZjbyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/q4voi8znbYANE5GtYI/giphy.gif';
 
     function createSocialToken() {
         const bytes = new Uint8Array(32);
@@ -63,32 +62,25 @@
             `;
             document.documentElement.appendChild(style);
         }
-        let lastResourceCount = 0;
-        let stableChecks = 0;
-        const startedAt = Date.now();
+        let completed = false;
         const finish = () => {
+            if (completed) return;
+            completed = true;
             overlay.style.setProperty('--nx-load', '100%');
             overlay.querySelector('small').textContent = 'Ready';
             setTimeout(() => overlay.classList.add('nx-loader-done'), 180);
             setTimeout(() => overlay.remove(), 900);
         };
-        const timer = setInterval(() => {
-            const resources = performance.getEntriesByType('resource').length;
-            stableChecks = resources === lastResourceCount ? stableChecks + 1 : 0;
-            lastResourceCount = resources;
-            const images = Array.from(document.images);
-            const imageRatio = images.length ? images.filter((image) => image.complete).length / images.length : 0;
-            const imagesReady = images.length === 0 || imageRatio >= .7;
-            const domReady = document.readyState !== 'loading';
-            const canvasReady = Boolean(document.querySelector('canvas'));
-            const progress = Math.min(94, 8 + (domReady ? 20 : 0) + Math.min(resources, 30) + Math.round(imageRatio * 22) + (canvasReady ? 14 : 0));
-            overlay.style.setProperty('--nx-load', `${progress}%`);
-            const majorityReady = domReady && canvasReady && imagesReady && stableChecks >= 2;
-            if (majorityReady || Date.now() - startedAt > 15000) {
-                clearInterval(timer);
-                finish();
-            }
-        }, 400);
+        const domReady = () => overlay.style.setProperty('--nx-load', '58%');
+        const loaded = () => {
+            overlay.style.setProperty('--nx-load', '92%');
+            requestAnimationFrame(() => requestAnimationFrame(finish));
+        };
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', domReady, { once: true });
+        else domReady();
+        if (document.readyState === 'complete') loaded();
+        else window.addEventListener('load', loaded, { once: true });
+        setTimeout(finish, 8000);
     }
 
     createGameLoadingScreen();
@@ -136,7 +128,7 @@
         activationKeyChar: '5',
         dimKeyChar: 'b',
         idleTimeout: 8,
-        discordReminder: true,
+        discordReminder: false,
         dndMode: false,
         theme: 'dark',
         emojiEnabled: true,
@@ -155,12 +147,12 @@
             details: 'Keeps the game and Nexus visual effects unchanged.'
         },
         balanced: {
-            label: 'Balanced', renderedMessages: 60, particles: 28,
+            label: 'Balanced', renderedMessages: 40, particles: 10,
             game: { highResTex: false, screenShake: false, interpolation: true, localRotation: true },
             details: 'Low-resolution textures, no shake, smooth interpolation, client-side rotation, and lighter Nexus effects.'
         },
         'low-power': {
-            label: 'Low power', renderedMessages: 30, particles: 0,
+            label: 'Low power', renderedMessages: 20, particles: 0,
             game: { highResTex: false, screenShake: false, interpolation: false, localRotation: true },
             details: 'Minimum Nexus effects and message workload while keeping client-side rotation enabled.'
         }
@@ -286,6 +278,8 @@
     const pinnedMessages = { game: null, global: null };
     const directMessageHistory = new Map();
     const socialUnread = new Map();
+    const directConversationMeta = new Map();
+    const directReadAt = new Map();
     const profileCache = new Map();
     let profilePopover = null;
     let profilePopoverTimer = null;
@@ -307,20 +301,24 @@
     let totalMessagesThisGame = 0, totalMentionsThisGame = 0;
     let connectionIndicator = null;
     let lastConnectionError = '';
-    let killLeaderElement = null;
-    let killLeaderObserver = null;
     let scrollToBottomBtn = null;
     let scrollAnimationId = null;
-    let killLeaderName = null;
     let historySaveTimer = null;
     let historyDirty = false;
     let sharedAudioContext = null;
     let sharedAudioFilter = null;
+    let lastSoundAt = 0;
+    let batchRenderDepth = 0;
+    let pendingBatchScroll = false;
+    let mentionPatternCache = { key: '', pattern: null };
 
     applyPerformanceMode(config.performanceMode);
 
     function playSound(type) {
         if (config.dndMode) return;
+        const now = performance.now();
+        if (type !== 'mention' && now - lastSoundAt < 80) return;
+        lastSoundAt = now;
         try {
             const AudioContextClass = window.AudioContext || window.webkitAudioContext;
             if (!AudioContextClass) return;
@@ -550,6 +548,7 @@
                 socialProfile = cacheProfile(session.profile);
                 pinnedMessages.global = session.globalPinned || null;
                 socialFriends = Array.isArray(session.friends) ? session.friends.map(cacheProfile) : [];
+                syncConversationMetadata(socialFriends, true);
                 socialRequests = Array.isArray(session.requests)
                     ? session.requests.map((request) => ({ ...request, from: cacheProfile(request.from) }))
                     : [];
@@ -564,6 +563,7 @@
                 let channelChanged = false;
                 socialProfile = session.profile ? cacheProfile(session.profile) : socialProfile;
                 socialFriends = Array.isArray(session.friends) ? session.friends.map(cacheProfile) : socialFriends;
+                syncConversationMetadata(socialFriends, false);
                 socialRequests = Array.isArray(session.requests)
                     ? session.requests.map((request) => ({ ...request, from: cacheProfile(request.from) }))
                     : socialRequests;
@@ -577,7 +577,8 @@
                     }
                 }
                 renderSocialSidebar();
-                if (activeChannel === 'direct' || channelChanged) renderActiveChannel();
+                if (channelChanged) renderActiveChannel();
+                else if (activeChannel === 'direct') refreshDirectChannelHeader();
             });
             chatSocket.on('global-message', (message) => {
                 cacheProfile(message.profile);
@@ -600,17 +601,30 @@
                 const names = (users || []).map((user) => typeof user === 'string' ? user : user.username);
                 addChannelNotice(`Global online: ${names.join(', ') || 'Nobody else is online.'}`, 'global');
             });
-            chatSocket.on('direct-history', ({ friendId, messages }) => {
-                directMessageHistory.set(friendId, Array.isArray(messages) ? messages : []);
+            chatSocket.on('direct-history', ({ friendId, messages, readAt }) => {
+                const history = Array.isArray(messages) ? messages : [];
+                directMessageHistory.set(friendId, history);
+                const lastMessage = history[history.length - 1];
+                if (lastMessage) updateDirectConversation(lastMessage);
+                directReadAt.set(friendId, Math.max(Number(directReadAt.get(friendId) || 0), Number(readAt || lastMessage?.timestamp || 0)));
+                socialUnread.delete(friendId);
                 if (activeChannel === 'direct' && selectedFriend?.id === friendId) renderActiveChannel();
+                else renderSocialSidebar();
             });
             chatSocket.on('direct-message', (message) => {
                 const friendId = message.fromId === socialProfile?.id ? message.toId : message.fromId;
                 const history = directMessageHistory.get(friendId) || [];
                 if (!history.some((item) => item.id === message.id)) history.push(message);
                 directMessageHistory.set(friendId, history.slice(-100));
+                updateDirectConversation(message);
                 if (message.fromId !== socialProfile?.id) playSound(containsMention(message.text, username) ? 'mention' : 'receive');
-                if (activeChannel === 'direct' && selectedFriend?.id === friendId && isChatOpen && !isDim) renderSocialMessage(message, true);
+                if (activeChannel === 'direct' && selectedFriend?.id === friendId && isChatOpen && !isDim) {
+                    renderSocialMessage(message, true);
+                    directReadAt.set(friendId, Number(message.timestamp || Date.now()));
+                    chatSocket.emit('direct-read', { friendId, readAt: Number(message.timestamp || Date.now()) });
+                    socialUnread.delete(friendId);
+                    renderSocialSidebar();
+                }
                 else if (message.fromId !== socialProfile?.id) incrementSocialUnread(friendId);
             });
             chatSocket.on('friend-request-received', ({ from }) => { playSound('friend'); addChannelNotice(`${from.username} sent you a friend request.`); });
@@ -702,86 +716,6 @@
             return isNaN(kills) ? 0 : kills;
         }
         return 0;
-    }
-
-    function updateKillLeader() {
-        const nameEl = document.getElementById('ui-kill-leader-name') || document.querySelector('.leader-name');
-        const countEl = document.getElementById('ui-kill-leader-count') || document.querySelector('.leader-kills');
-        if (!nameEl || !countEl) return;
-        const name = nameEl.textContent.trim() || 'Nobody';
-        const kills = countEl.textContent.trim() || '0';
-
-        if (name !== killLeaderName) {
-            killLeaderName = name;
-            updateMessagesForKillLeader();
-        }
-
-        if (!killLeaderElement) {
-            killLeaderElement = document.createElement('div');
-            killLeaderElement.className = 'pinned-msg kill-leader';
-            killLeaderElement.innerHTML = `
-                <img src="${FIRE_GIF_URL}" class="fire-gif fire-gif-left" alt="🔥">
-                <span class="kill-leader-text">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="gold" stroke="none"><path d="M5 16l-3-4 14-14 4 14-15 4z"/></svg>
-                    Kill Leader: <strong>${escapeHtml(name)}</strong> (${escapeHtml(kills)})
-                </span>
-                <img src="${FIRE_GIF_URL}" class="fire-gif fire-gif-right" alt="🔥">
-            `;
-            if (messageArea && messageArea.firstChild) {
-                messageArea.insertBefore(killLeaderElement, messageArea.firstChild);
-            }
-        } else {
-            const strongEl = killLeaderElement.querySelector('strong');
-            if (strongEl) strongEl.textContent = name;
-            const textSpan = killLeaderElement.querySelector('.kill-leader-text');
-            if (textSpan) textSpan.innerHTML = `
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="gold" stroke="none"><path d="M5 16l-3-4 14-14 4 14-15 4z"/></svg>
-                Kill Leader: <strong>${escapeHtml(name)}</strong> (${escapeHtml(kills)})
-            `;
-        }
-    }
-
-    function updateMessagesForKillLeader() {
-        if (!messageArea) return;
-        const messages = messageArea.querySelectorAll('.user-msg');
-        messages.forEach(msg => {
-            const author = msg.getAttribute('data-author');
-            if (author === killLeaderName) {
-                msg.classList.add('kill-leader-msg');
-            } else {
-                msg.classList.remove('kill-leader-msg');
-            }
-        });
-    }
-
-    function waitForKillLeaderElements() {
-        const check = () => {
-            const nameEl = document.getElementById('ui-kill-leader-name') || document.querySelector('.leader-name');
-            const countEl = document.getElementById('ui-kill-leader-count') || document.querySelector('.leader-kills');
-            if (nameEl && countEl) {
-                observeKillLeader();
-                return true;
-            }
-            return false;
-        };
-        let attempts = 0;
-        const search = () => {
-            if (check()) return;
-            attempts += 1;
-            if (attempts < 30) setTimeout(search, 1000);
-        };
-        search();
-    }
-
-    function observeKillLeader() {
-        if (killLeaderObserver) killLeaderObserver.disconnect();
-        const nameEl = document.getElementById('ui-kill-leader-name') || document.querySelector('.leader-name');
-        const countEl = document.getElementById('ui-kill-leader-count') || document.querySelector('.leader-kills');
-        if (!nameEl || !countEl) return;
-        killLeaderObserver = new MutationObserver(updateKillLeader);
-        killLeaderObserver.observe(nameEl, { childList: true, characterData: true, subtree: true });
-        killLeaderObserver.observe(countEl, { childList: true, characterData: true, subtree: true });
-        updateKillLeader();
     }
 
     function updateConnectionIndicator(connected) {
@@ -942,8 +876,67 @@
         if (chatSocket?.connected) chatSocket.emit('typing-update', typingPayload(false));
     }
 
+    function syncConversationMetadata(friends, replaceUnread) {
+        if (replaceUnread) {
+            Array.from(socialUnread.keys()).forEach((key) => {
+                if (key !== 'global') socialUnread.delete(key);
+            });
+        }
+        (friends || []).forEach((friend) => {
+            const incoming = friend?.conversation || {};
+            const current = directConversationMeta.get(friend.id) || {};
+            const merged = {
+                unreadCount: Number(incoming.unreadCount || 0),
+                lastMessageAt: Math.max(Number(current.lastMessageAt || 0), Number(incoming.lastMessageAt || 0)),
+                lastMessageText: Number(incoming.lastMessageAt || 0) >= Number(current.lastMessageAt || 0)
+                    ? String(incoming.lastMessageText || '')
+                    : String(current.lastMessageText || ''),
+                lastMessageFromId: Number(incoming.lastMessageAt || 0) >= Number(current.lastMessageAt || 0)
+                    ? String(incoming.lastMessageFromId || '')
+                    : String(current.lastMessageFromId || ''),
+            };
+            const locallyReadAt = Number(directReadAt.get(friend.id) || 0);
+            if (merged.lastMessageAt <= locallyReadAt) merged.unreadCount = 0;
+            directConversationMeta.set(friend.id, merged);
+            friend.conversation = merged;
+            if (replaceUnread) {
+                if (merged.unreadCount > 0) socialUnread.set(friend.id, merged.unreadCount);
+            } else if (merged.unreadCount > 0) {
+                socialUnread.set(friend.id, Math.max(Number(socialUnread.get(friend.id) || 0), merged.unreadCount));
+            }
+        });
+    }
+
+    function updateDirectConversation(message) {
+        if (!message || !socialProfile) return;
+        const friendId = message.fromId === socialProfile.id ? message.toId : message.fromId;
+        if (!friendId) return;
+        const timestamp = Number(message.timestamp || Date.now());
+        const current = directConversationMeta.get(friendId) || {};
+        if (timestamp < Number(current.lastMessageAt || 0)) return;
+        const next = {
+            ...current,
+            lastMessageAt: timestamp,
+            lastMessageText: String(message.text || ''),
+            lastMessageFromId: String(message.fromId || ''),
+        };
+        directConversationMeta.set(friendId, next);
+        const friend = socialFriends.find((item) => item.id === friendId);
+        if (friend) friend.conversation = next;
+    }
+
+    function refreshDirectChannelHeader() {
+        if (activeChannel !== 'direct' || !selectedFriend) return;
+        const title = document.getElementById('nx-channel-title');
+        const subtitle = document.getElementById('nx-channel-subtitle');
+        if (title) title.textContent = selectedFriend.username;
+        if (subtitle) subtitle.textContent = selectedFriend.online ? 'Online now' : 'Offline · messages are saved';
+    }
+
     function incrementSocialUnread(key) {
         socialUnread.set(key, (socialUnread.get(key) || 0) + 1);
+        const conversation = directConversationMeta.get(key);
+        if (conversation) conversation.unreadCount = socialUnread.get(key);
         renderSocialSidebar();
     }
 
@@ -1011,8 +1004,16 @@
             element.textContent = value;
             return;
         }
-        const alternatives = uniqueNames.map((name) => name.split(/\s+/).map(escapeRegex).join('\\s+')).join('|');
-        const pattern = new RegExp(`(^|\\s)(@(?:${alternatives}))(?=\\s|$|[.,!?;:])`, 'gi');
+        const cacheKey = uniqueNames.join('\u0000');
+        if (mentionPatternCache.key !== cacheKey) {
+            const alternatives = uniqueNames.map((name) => name.split(/\s+/).map(escapeRegex).join('\\s+')).join('|');
+            mentionPatternCache = {
+                key: cacheKey,
+                pattern: new RegExp(`(^|\\s)(@(?:${alternatives}))(?=\\s|$|[.,!?;:])`, 'gi'),
+            };
+        }
+        const pattern = mentionPatternCache.pattern;
+        pattern.lastIndex = 0;
         let lastIndex = 0;
         let match;
         while ((match = pattern.exec(value))) {
@@ -1083,7 +1084,11 @@
         selectedFriend = friend;
         const key = channel === 'direct' ? friend?.id : channel;
         if (key) socialUnread.delete(key);
-        if (channel === 'direct' && friend && chatSocket?.connected) chatSocket.emit('direct-history', friend.id);
+        if (channel === 'direct' && friend) {
+            const conversation = directConversationMeta.get(friend.id);
+            if (conversation) conversation.unreadCount = 0;
+            if (chatSocket?.connected) chatSocket.emit('direct-history', friend.id);
+        }
         renderSocialSidebar();
         renderActiveChannel();
         if (changed) playSound('navigate');
@@ -1111,6 +1116,11 @@
         requests.innerHTML = socialRequests.length
             ? socialRequests.map((request) => `<div class="nx-request nx-profile-trigger" data-request-id="${request.id}" data-profile-id="${escapeHtml(request.from.id)}">${avatarMarkup(request.from, 'nx-avatar nx-avatar-small')}<span>${escapeHtml(request.from.username)}</span><button data-action="accept" title="Accept request">✓</button><button data-action="decline" title="Decline request">×</button></div>`).join('')
             : '<span class="nx-empty">No pending requests</span>';
+        socialFriends.sort((first, second) => {
+            const firstTime = Number(directConversationMeta.get(first.id)?.lastMessageAt || 0);
+            const secondTime = Number(directConversationMeta.get(second.id)?.lastMessageAt || 0);
+            return secondTime - firstTime || Number(Boolean(second.online)) - Number(Boolean(first.online)) || first.username.localeCompare(second.username);
+        });
         friends.innerHTML = socialFriends.length
             ? socialFriends.map((friend) => `<div class="nx-friend-row nx-profile-trigger" data-profile-id="${escapeHtml(friend.id)}"><button class="nx-friend ${activeChannel === 'direct' && selectedFriend?.id === friend.id ? 'active' : ''}" data-friend-id="${escapeHtml(friend.id)}">${avatarMarkup(friend, 'nx-avatar nx-avatar-small')}<span class="nx-presence ${friend.online ? 'online' : ''}"></span><span>${escapeHtml(friend.username)}</span>${socialUnread.get(friend.id) ? `<b>${socialUnread.get(friend.id)}</b>` : ''}</button><button class="nx-remove-friend" data-remove-friend="${escapeHtml(friend.id)}" title="Remove friend">×</button></div>`).join('')
             : '<span class="nx-empty">Add someone with their Nexus ID</span>';
@@ -1121,6 +1131,7 @@
             globalBadge.textContent = count;
             globalBadge.hidden = count === 0;
         }
+        updateBadges();
     }
 
     function renderReactionCounts(container, reactions) {
@@ -1199,6 +1210,7 @@
 
     function renderActiveChannel() {
         if (!messageArea) return;
+        batchRenderDepth += 1;
         messageArea.innerHTML = '';
         const renderLimit = selectedPerformanceProfile().renderedMessages;
         const title = document.getElementById('nx-channel-title');
@@ -1237,6 +1249,11 @@
         if (typing) typing.style.display = '';
         updateTypingIndicator();
         renderSocialSidebar();
+        batchRenderDepth -= 1;
+        if (batchRenderDepth === 0 && pendingBatchScroll) {
+            pendingBatchScroll = false;
+            scrollToBottom(false);
+        }
     }
 
     function sendMessage() {
@@ -1349,10 +1366,15 @@
         return messageArea.scrollHeight - messageArea.clientHeight <= messageArea.scrollTop + tol;
     }
     function scrollToBottom(smooth = true) {
+        if (!messageArea) return;
+        if (batchRenderDepth > 0) {
+            pendingBatchScroll = true;
+            return;
+        }
         if (scrollAnimationId) cancelAnimationFrame(scrollAnimationId);
         userScrolled = false;
         updateScrollButton();
-        if (config.performanceMode === 'low-power' || isDim || document.hidden) smooth = false;
+        if (config.performanceMode !== 'native' || isDim || document.hidden) smooth = false;
         if (!smooth) { messageArea.scrollTop = messageArea.scrollHeight; return; }
         const target = messageArea.scrollHeight;
         const start = messageArea.scrollTop;
@@ -1710,45 +1732,6 @@
             .poll-option { display: block; width: 100%; text-align: left; background: rgba(255,255,255,0.065); border: 1px solid var(--nx-glass-border); color: var(--nx-text); padding: 7px 9px; margin-bottom: 5px; border-radius: 8px; cursor: pointer; }
             .poll-option:hover { background: rgba(255,255,255,0.15); }
             .pinned-msg { background: linear-gradient(90deg, rgba(242,201,76,.11), rgba(113,133,82,.1)); padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--nx-glass-border); font-style: normal; border-radius: 10px; display: flex; align-items: center; gap: 7px; }
-            .kill-leader {
-                position: relative;
-                background-image: url('${FIRE_GIF_URL}');
-                background-size: cover;
-                background-blend-mode: overlay;
-                background-color: rgba(0, 0, 0, 0.4);
-                animation: firePulse 1.5s ease-in-out infinite;
-                border: 2px solid gold;
-                box-shadow: 0 0 30px rgba(255, 215, 0, 0.6);
-                text-shadow: 0 0 10px gold, 0 0 20px darkorange;
-                font-weight: 900;
-                font-size: 1.1em;
-                padding: 10px 14px;
-                border-radius: 12px;
-                color: #fff;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                gap: 8px;
-                overflow: hidden;
-                z-index: 1;
-            }
-            .kill-leader .fire-gif { width: 28px; height: 28px; object-fit: contain; z-index: 2; }
-            .kill-leader .kill-leader-text { z-index: 2; position: relative; display: flex; align-items: center; gap: 6px; }
-            @keyframes firePulse {
-                0% { box-shadow: 0 0 30px rgba(255, 215, 0, 0.6); }
-                50% { box-shadow: 0 0 50px rgba(255, 215, 0, 1), 0 0 80px rgba(255, 69, 0, 0.6); }
-                100% { box-shadow: 0 0 30px rgba(255, 215, 0, 0.6); }
-            }
-            .kill-leader-msg {
-                background-image: url('${FIRE_GIF_URL}');
-                background-size: cover;
-                background-blend-mode: overlay;
-                background-color: rgba(0, 0, 0, 0.4);
-                border: 1px solid gold !important;
-                box-shadow: 0 0 20px rgba(255, 215, 0, 0.5) !important;
-                text-shadow: 0 0 5px gold, 0 0 10px darkorange;
-                color: #fff !important;
-            }
             .kills-badge {
                 display: inline-block;
                 background: rgba(0,0,0,0.4);
@@ -2085,7 +2068,6 @@
         renderActiveChannel();
         // The game WebSocket interceptor is already active.
         connectToChat();
-        waitForKillLeaderElements();
         checkForUpdate();
     }
 
@@ -2112,6 +2094,7 @@
             if (settingsPanel) settingsPanel.style.display = 'none';
             hideProfilePopover(0);
             if (scrollAnimationId) { cancelAnimationFrame(scrollAnimationId); scrollAnimationId = null; }
+            if (sharedAudioContext && sharedAudioContext.state === 'running') sharedAudioContext.suspend().catch(() => {});
         } else {
             renderActiveChannel();
             if (!isInputFocused && !isHovering) startIdleTimer();
@@ -2140,12 +2123,15 @@
     function updateBadges() {
         const mentionBadge = document.getElementById('nx-mention-badge');
         const unreadBadge = document.getElementById('nx-unread-badge');
+        const socialUnreadCount = Array.from(socialUnread.values()).reduce((total, count) => total + Number(count || 0), 0);
+        const totalUnreadCount = unreadCount + socialUnreadCount;
         if (mentionBadge) { mentionBadge.style.display = mentionCount > 0 ? 'inline' : 'none'; mentionBadge.textContent = mentionCount; }
         if (unreadBadge) { unreadBadge.style.display = unreadCount > 0 ? 'inline' : 'none'; unreadBadge.textContent = unreadCount; }
+        if (!toggleIcon) return;
         const toggleBadge = toggleIcon.querySelector('.badge');
-        if (unreadCount > 0) {
-            if (!toggleBadge) { const span = document.createElement('span'); span.className = 'badge'; span.textContent = unreadCount; toggleIcon.appendChild(span); }
-            else { toggleBadge.textContent = unreadCount; toggleBadge.style.display = 'block'; }
+        if (totalUnreadCount > 0) {
+            if (!toggleBadge) { const span = document.createElement('span'); span.className = 'badge'; span.textContent = totalUnreadCount > 99 ? '99+' : totalUnreadCount; toggleIcon.appendChild(span); }
+            else { toggleBadge.textContent = totalUnreadCount > 99 ? '99+' : totalUnreadCount; toggleBadge.style.display = 'block'; }
         } else if (toggleBadge) toggleBadge.style.display = 'none';
         if (document.hidden && mentionCount > 0) document.title = `🔴 (${mentionCount}) Nexus Chat`;
     }
@@ -2305,6 +2291,9 @@
         chatContainer.classList.add('nx-hidden');
         setTimeout(() => { if (!isChatOpen) chatContainer.style.display = 'none'; }, 300);
         isChatOpen = false; toggleIcon.style.display = 'flex'; clearIdle(); playSound('close');
+        setTimeout(() => {
+            if (!isChatOpen && sharedAudioContext && sharedAudioContext.state === 'running') sharedAudioContext.suspend().catch(() => {});
+        }, 220);
     }
 
     async function copyText(value) {
@@ -2477,7 +2466,7 @@
 
     function startDiscordReminder() {
         stopDiscordReminder();
-        if (!config.discordReminder) return;
+        if (!config.discordReminder || config.performanceMode !== 'native') return;
         discordReminderInterval = setInterval(() => {
             if (chatSocket && chatSocket.connected && gameId) {
                 const div = document.createElement('div'); div.className = 'system-msg discord-reminder';
@@ -2499,7 +2488,7 @@
     window.addEventListener('pagehide', () => {
         if (historySaveTimer) clearTimeout(historySaveTimer);
         flushHistory();
-        if (killLeaderObserver) killLeaderObserver.disconnect();
+        if (sharedAudioContext && sharedAudioContext.state === 'running') sharedAudioContext.suspend().catch(() => {});
     });
 
     function createOnboardingOverlay() {

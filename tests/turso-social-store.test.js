@@ -52,6 +52,11 @@ test('Turso persists accounts, friendships and chat history across restarts', as
   assert.equal(aliceSnapshot.globalHistory[0].text, 'persistent global');
   assert.equal(aliceSnapshot.globalHistory[0].reactions['❤️'], 1);
   assert.equal((await second.directHistory(alice.user.id, bob.user.id))[0].text, 'persistent direct');
+  const bobSnapshot = await second.snapshot(bob.user.id);
+  assert.equal(bobSnapshot.friends[0].conversation.unreadCount, 1);
+  assert.equal(bobSnapshot.friends[0].conversation.lastMessageText, 'persistent direct');
+  assert.equal(await second.markDirectRead(bob.user.id, alice.user.id, Date.now()), true);
+  assert.equal((await second.snapshot(bob.user.id)).friends[0].conversation.unreadCount, 0);
 
   const stored = await second.client.execute({
     sql: 'SELECT token_hash FROM users WHERE id = ?',
