@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.5.0 - Reliable inbox and performance release
+
+- Added persistent unread counts for direct messages received while offline.
+- Sorted friend conversations by the most recent message.
+- Marked direct messages as read consistently in memory and Turso storage.
+- Removed the animated kill-leader GIF, DOM polling, and mutation observer from Nexus Chat.
+- Batched message rendering and cached mention parsing to reduce main-thread work.
+- Reduced default effects, smooth scrolling, reminder timers, and audio churn.
+- Rebuilt the browser package as a standards-compatible ZIP without `./` archive paths.
+- Preserved client-side player rotation in every optimized game preset.
+
 ## 3.4.0 — Public release
 
 - Added the full command set to Match and Global.

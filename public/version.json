@@ -1,24 +1,17 @@
 {
-  "version": "3.4.1",
+  "version": "3.5.0",
   "changes": [
-    "Distribution-aware update notifications for extension and Tampermonkey users",
-    "Extension updates now open the official Nexus download website",
-    "Tampermonkey updates now open the official Greasy Fork listing",
-    "Complete command support in Match and Global",
-    "Channel-correct command results, global polls, pins, and statistics",
-    "Smart mention suggestions in Match, Global, and friend messages",
-    "Reliable mentions for usernames containing spaces",
-    "Futuristic sound cues with volume and Do Not Disturb controls",
-    "Integrated live performance presets with client-side rotation preserved",
-    "Profiles, friends, private messages, reactions, typing, and user blocking"
+    "Persistent unread counters for direct messages received while offline",
+    "Friend conversations sorted by their most recent message",
+    "Direct-message read state saved in Turso across sessions",
+    "Lower-overhead rendering, sounds, scrolling, and startup loading",
+    "Client-side player rotation remains enabled in optimized presets"
   ],
   "bugs": [
-    "Fixed the generic update button sending every installation to the same destination",
-    "Scoped friend-message mentions to the conversation currently open",
-    "Fixed private-message selection and avatar refresh races",
-    "Kept command output inside the originating channel",
-    "Prevented the hidden interface from intercepting game input",
-    "Reduced rendering, audio, history, and observer overhead",
-    "Synchronized the web client, userscript, and packaged extension"
+    "Fixed offline messages remaining invisible until every friend chat was opened",
+    "Removed the animated kill-leader GIF, polling, and observer overhead",
+    "Avoided repeated scroll animations while rebuilding message history",
+    "Rebuilt the extension as a compatible ZIP without invalid relative paths",
+    "Synchronized the web client, userscript, and browser extension"
   ]
 }

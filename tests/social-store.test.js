@@ -37,3 +37,32 @@ test('a recovery key derives the same Nexus ID without server storage', async ()
   assert.equal(restored.user.friendCode, initial.user.friendCode);
   assert.notEqual(restored.user.username, initial.user.username);
 });
+
+test('offline direct messages expose persistent unread counts and recent conversation order', async () => {
+  const store = new SocialStore(null);
+  const alice = await store.register('Alice');
+  const bob = await store.register('Bob');
+  const charlie = await store.register('Charlie');
+
+  for (const friend of [bob, charlie]) {
+    const request = await store.requestFriend(alice.user.id, friend.user.friendCode);
+    assert.equal(request.ok, true);
+    assert.equal((await store.respondToFriendRequest(friend.user.id, request.request.id, true)).ok, true);
+  }
+
+  await store.addDirectMessage(bob.user.id, alice.user.id, 'from Bob while offline');
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  await store.addDirectMessage(charlie.user.id, alice.user.id, 'newest offline message');
+
+  const snapshot = store.snapshot(alice.user.id);
+  assert.equal(snapshot.friends[0].username, 'Charlie');
+  assert.equal(snapshot.friends[0].conversation.unreadCount, 1);
+  assert.equal(snapshot.friends[1].conversation.unreadCount, 1);
+  assert.equal(snapshot.friends[0].conversation.lastMessageText, 'newest offline message');
+
+  const bobHistory = store.directHistory(alice.user.id, bob.user.id);
+  assert.equal(await store.markDirectRead(alice.user.id, bob.user.id, bobHistory.at(-1).timestamp), true);
+  const afterRead = store.snapshot(alice.user.id);
+  assert.equal(afterRead.friends.find((friend) => friend.id === bob.user.id).conversation.unreadCount, 0);
+  assert.equal(afterRead.friends.find((friend) => friend.id === charlie.user.id).conversation.unreadCount, 1);
+});

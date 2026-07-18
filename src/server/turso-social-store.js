@@ -80,6 +80,12 @@ class TursoSocialStore {
         text TEXT NOT NULL,
         timestamp INTEGER NOT NULL
       )`,
+      `CREATE TABLE IF NOT EXISTS direct_read_state (
+        user_id TEXT NOT NULL,
+        friend_id TEXT NOT NULL,
+        last_read_at INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (user_id, friend_id)
+      )`,
       `CREATE TABLE IF NOT EXISTS global_message_reactions (
         message_id TEXT NOT NULL,
         emoji TEXT NOT NULL,
@@ -92,6 +98,8 @@ class TursoSocialStore {
       'CREATE INDEX IF NOT EXISTS idx_requests_pair ON friend_requests(from_id, to_id, status)',
       'CREATE INDEX IF NOT EXISTS idx_global_messages_time ON global_messages(timestamp)',
       'CREATE INDEX IF NOT EXISTS idx_direct_messages_conversation ON direct_messages(conversation_key, timestamp)',
+      'CREATE INDEX IF NOT EXISTS idx_direct_messages_unread ON direct_messages(conversation_key, to_id, timestamp)',
+      'CREATE INDEX IF NOT EXISTS idx_direct_read_user ON direct_read_state(user_id, friend_id)',
       'CREATE INDEX IF NOT EXISTS idx_global_reactions_message ON global_message_reactions(message_id)',
     ], 'write');
     const userColumns = await this.client.execute('PRAGMA table_info(users)');
@@ -198,7 +206,7 @@ class TursoSocialStore {
 
   async snapshot(userId, onlineIds = new Set()) {
     await this.ready;
-    const [userRow, friendsResult, requestsResult, globalResult, reactionResult] = await Promise.all([
+    const [userRow, friendsResult, requestsResult, globalResult, reactionResult, conversationResult] = await Promise.all([
       this.findById(userId),
       this.client.execute({
         sql: `SELECT u.* FROM friendships f
@@ -232,12 +240,55 @@ class TursoSocialStore {
               GROUP BY message_id, emoji`,
         args: [MAX_GLOBAL_HISTORY],
       }),
+      this.client.execute({
+        sql: `WITH friend_conversations AS (
+                SELECT f.user_id, f.friend_id,
+                       CASE WHEN f.user_id < f.friend_id
+                         THEN f.user_id || ':' || f.friend_id
+                         ELSE f.friend_id || ':' || f.user_id
+                       END AS conversation_key,
+                       COALESCE(r.last_read_at, 0) AS last_read_at
+                FROM friendships f
+                LEFT JOIN direct_read_state r
+                  ON r.user_id = f.user_id AND r.friend_id = f.friend_id
+                WHERE f.user_id = ?
+              )
+              SELECT fc.friend_id,
+                     COALESCE((SELECT dm.timestamp FROM direct_messages dm
+                       WHERE dm.conversation_key = fc.conversation_key
+                       ORDER BY dm.timestamp DESC, dm.rowid DESC LIMIT 1), 0) AS last_message_at,
+                     COALESCE((SELECT dm.text FROM direct_messages dm
+                       WHERE dm.conversation_key = fc.conversation_key
+                       ORDER BY dm.timestamp DESC, dm.rowid DESC LIMIT 1), '') AS last_message_text,
+                     COALESCE((SELECT dm.from_id FROM direct_messages dm
+                       WHERE dm.conversation_key = fc.conversation_key
+                       ORDER BY dm.timestamp DESC, dm.rowid DESC LIMIT 1), '') AS last_message_from_id,
+                     (SELECT COUNT(*) FROM direct_messages dm
+                       WHERE dm.conversation_key = fc.conversation_key
+                         AND dm.to_id = fc.user_id
+                         AND dm.timestamp > fc.last_read_at) AS unread_count
+              FROM friend_conversations fc`,
+        args: [userId],
+      }),
     ]);
     if (!userRow) return null;
+    const conversationByFriend = new Map(conversationResult.rows.map((row) => [String(row.friend_id), {
+      unreadCount: Number(row.unread_count || 0),
+      lastMessageAt: Number(row.last_message_at || 0),
+      lastMessageText: String(row.last_message_text || ''),
+      lastMessageFromId: String(row.last_message_from_id || ''),
+    }]));
     const friends = friendsResult.rows.map((row) => ({
       ...publicUser(row),
       online: onlineIds.has(String(row.id)),
-    }));
+      conversation: conversationByFriend.get(String(row.id)) || {
+        unreadCount: 0,
+        lastMessageAt: 0,
+        lastMessageText: '',
+        lastMessageFromId: '',
+      },
+    })).sort((first, second) => Number(second.conversation.lastMessageAt) - Number(first.conversation.lastMessageAt)
+      || first.username.localeCompare(second.username));
     const requests = requestsResult.rows.map((row) => ({
       id: String(row.id),
       from: {
@@ -496,6 +547,23 @@ class TursoSocialStore {
       },
     ], 'write');
     return message;
+  }
+
+  async markDirectRead(userId, friendId, readAt = Date.now()) {
+    await this.ready;
+    const friendship = await this.client.execute({
+      sql: 'SELECT 1 FROM friendships WHERE user_id = ? AND friend_id = ? LIMIT 1',
+      args: [userId, friendId],
+    });
+    if (!friendship.rows.length) return false;
+    await this.client.execute({
+      sql: `INSERT INTO direct_read_state (user_id, friend_id, last_read_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id, friend_id) DO UPDATE SET
+              last_read_at = MAX(direct_read_state.last_read_at, excluded.last_read_at)`,
+      args: [userId, friendId, Number(readAt) || 0],
+    });
+    return true;
   }
 
   async close() {
