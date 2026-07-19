@@ -10,7 +10,8 @@ const LIMITS = Object.freeze({
   history: 50,
   messageId: 80,
   friendCode: 14,
-  bio: 160,
+  bio: 2000,
+  bioWords: 250,
   avatarUrl: 500,
 });
 
@@ -65,6 +66,10 @@ function readProfile(payload) {
     name: 'Bio', min: 0, max: LIMITS.bio, allowEmpty: true,
   });
   if (!bio.ok) return bio;
+  const wordCount = bio.value ? bio.value.split(/\s+/).filter(Boolean).length : 0;
+  if (wordCount > LIMITS.bioWords) {
+    return { ok: false, error: `Bio must contain at most ${LIMITS.bioWords} words.` };
+  }
   const avatarUrl = typeof payload.avatarUrl === 'string' ? payload.avatarUrl.trim() : '';
   if (avatarUrl.length > LIMITS.avatarUrl) {
     return { ok: false, error: `Avatar URL must be at most ${LIMITS.avatarUrl} characters.` };

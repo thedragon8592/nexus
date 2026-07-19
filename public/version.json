@@ -1,17 +1,17 @@
 {
-  "version": "3.5.0",
+  "version": "3.6.0",
   "changes": [
-    "Persistent unread counters for direct messages received while offline",
-    "Friend conversations sorted by their most recent message",
-    "Direct-message read state saved in Turso across sessions",
-    "Lower-overhead rendering, sounds, scrolling, and startup loading",
-    "Client-side player rotation remains enabled in optimized presets"
+    "Kill Leader presentation synchronized live with the current match",
+    "Outgoing friend requests can be reviewed and cancelled",
+    "Profiles show full biographies up to 250 words",
+    "Historical messages follow the account's current display name",
+    "Two-second message cooldown across every channel"
   ],
   "bugs": [
-    "Fixed offline messages remaining invisible until every friend chat was opened",
-    "Removed the animated kill-leader GIF, polling, and observer overhead",
-    "Avoided repeated scroll animations while rebuilding message history",
-    "Rebuilt the extension as a compatible ZIP without invalid relative paths",
-    "Synchronized the web client, userscript, and browser extension"
+    "Stopped AudioContext autoplay warnings from repeating before user interaction",
+    "Fixed the undefined Kill Leader runtime error",
+    "Added automatic connection retries instead of requiring Reconnect now",
+    "Prevented optimizer progress from remaining stuck after a task error",
+    "Fixed the scroll-to-latest button and stale friend-request actions"
   ]
 }

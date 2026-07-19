@@ -175,7 +175,7 @@ test('social accounts support global chat, friend requests and direct messages',
   const bobJoin = await join(bob, 'social-game', 'Bob');
 
   assert.equal(aliceJoin.socialSession.protocolVersion, 3);
-  assert.equal(aliceJoin.socialSession.serverVersion, '3.5.0');
+  assert.equal(aliceJoin.socialSession.serverVersion, '3.6.0');
   assert.match(aliceJoin.socialSession.profile.friendCode, /^NX-[0-9A-F]{8}$/);
   assert.ok(aliceJoin.socialSession.token);
 
@@ -298,6 +298,38 @@ test('profiles, global private messages, reactions, typing and friend removal wo
   assert.deepEqual(bobAfterRemoval.friends, []);
 });
 
+test('outgoing friend requests are visible and can be cancelled', async (t) => {
+  const nexus = createNexusServer({ dataFile: null });
+  const port = await nexus.start(0);
+  const url = `http://127.0.0.1:${port}`;
+  const alice = await createConnectedClient(url);
+  const bob = await createConnectedClient(url);
+  t.after(async () => {
+    alice.disconnect();
+    bob.disconnect();
+    await nexus.stop();
+  });
+
+  const aliceJoin = await join(alice, 'request-cancel', 'Alice');
+  const bobJoin = await join(bob, 'request-cancel', 'Bob');
+  const sentEvent = nextEvent(alice, 'friend-request-sent');
+  const alicePending = nextEvent(alice, 'social-update');
+  const bobPending = nextEvent(bob, 'social-update');
+  alice.emit('friend-request', bobJoin.socialSession.profile.friendCode);
+  const [[sent], [aliceSocial], [bobSocial]] = await Promise.all([sentEvent, alicePending, bobPending]);
+  assert.equal(aliceSocial.sentRequests[0].id, sent.requestId);
+  assert.equal(bobSocial.requests[0].from.id, aliceJoin.socialSession.profile.id);
+
+  const cancelledEvent = nextEvent(alice, 'friend-request-cancelled');
+  const aliceCancelled = nextEvent(alice, 'social-update');
+  const bobCancelled = nextEvent(bob, 'social-update');
+  alice.emit('cancel-friend-request', sent.requestId);
+  const [[cancelled], [aliceAfter], [bobAfter]] = await Promise.all([cancelledEvent, aliceCancelled, bobCancelled]);
+  assert.equal(cancelled.requestId, sent.requestId);
+  assert.deepEqual(aliceAfter.sentRequests, []);
+  assert.deepEqual(bobAfter.requests, []);
+});
+
 test('match reactions are restored in history and typing stays inside the match', async (t) => {
   const nexus = createNexusServer({ dataFile: null });
   const port = await nexus.start(0);
@@ -345,7 +377,7 @@ test('versioned public assets are served without stale caching', async (t) => {
   assert.equal(healthResponse.headers.get('x-frame-options'), 'DENY');
   assert.match(healthResponse.headers.get('permissions-policy'), /camera=\(\)/);
   const health = await healthResponse.json();
-  assert.equal(health.version, '3.5.0');
+  assert.equal(health.version, '3.6.0');
 
   for (const path of ['/client.js', '/nexus-chat.user.js', '/nexus-optimizer.user.js']) {
     const response = await fetch(`${url}${path}`);
@@ -355,7 +387,7 @@ test('versioned public assets are served without stale caching', async (t) => {
   }
 
   const client = await fetch(`${url}/client.js`).then((response) => response.text());
-  assert.match(client, /const EXT_VERSION = '3\.5\.0'/);
+  assert.match(client, /const EXT_VERSION = '3\.6\.0'/);
   assert.match(client, /CLIENT_DISTRIBUTION/);
   assert.match(client, /Update on Greasy Fork/);
   assert.match(client, /Open update page/);
@@ -376,9 +408,16 @@ test('versioned public assets are served without stale caching', async (t) => {
   assert.match(client, /nx-chat-dimmed/);
   assert.match(client, /sharedAudioContext/);
   assert.match(client, /sharedAudioFilter/);
+  assert.match(client, /function unlockAudio/);
+  assert.match(client, /sharedAudioContext\.state !== 'running'/);
+  assert.match(client, /reconnectionAttempts: Infinity/);
+  assert.match(client, /MESSAGE_COOLDOWN_MS = 2000/);
+  assert.match(client, /function attachKillLeaderObserver/);
+  assert.match(client, /FIRE_GIF_URL/);
+  assert.match(client, /cancel-friend-request/);
+  assert.match(client, /250 words/);
   assert.match(client, /localRotation: true/);
   assert.doesNotMatch(client, /observer\.observe\(document\.body/);
-  assert.doesNotMatch(client, /FIRE_GIF_URL/);
   assert.doesNotMatch(client, /waitForKillLeaderElements/);
   assert.doesNotMatch(client, /getEntriesByType\('resource'\)/);
   assert.match(client, /batchRenderDepth/);
@@ -399,7 +438,7 @@ test('versioned public assets are served without stale caching', async (t) => {
   assert.doesNotMatch(client, /Configuración de Nexus/);
 
   const userscript = await fetch(`${url}/nexus-chat.user.js`).then((response) => response.text());
-  assert.match(userscript, /@version\s+3\.5\.0/);
+  assert.match(userscript, /@version\s+3\.6\.0/);
   assert.match(userscript, /clientType: 'userscript'/);
   assert.match(userscript, /installedVersion: LOADER_VERSION/);
   assert.match(userscript, /live performance optimizer/);
@@ -414,7 +453,7 @@ test('the packaged browser extension is synchronized with the web client', () =>
   const extensionClient = fs.readFileSync(path.join(projectRoot, 'extension', 'nexus-chat.js'), 'utf8');
   const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, 'extension', 'manifest.json'), 'utf8'));
   assert.equal(extensionClient, client);
-  assert.equal(manifest.version, '3.5.0');
+  assert.equal(manifest.version, '3.6.0');
   assert.deepEqual(manifest.host_permissions, ['https://nexus-chat-free.onrender.com/*']);
   assert.equal(manifest.content_scripts[0].all_frames, false);
   assert.ok(fs.existsSync(path.join(projectRoot, 'extension', 'interceptor.js')));

@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.6.0 - Runtime and social polish
+
+- Unlock Web Audio only after a real user gesture, preventing repeated autoplay warnings.
+- Retry the server connection automatically and refresh the room after Nexus ID detection.
+- Restore a lightweight, live Kill Leader banner that follows every leader change in a match.
+- Prevent optimization progress from getting stuck when an individual cleanup task fails.
+- Fix the scroll-to-latest control and enforce a two-second send cooldown in every channel.
+- Show outgoing friend-request status and allow requests to be cancelled.
+- Display current profile names in historical messages after a rename.
+- Expand profile previews and allow biographies of up to 250 words.
+
 ## 3.5.0 - Reliable inbox and performance release
 
 - Added persistent unread counts for direct messages received while offline.
