@@ -20,7 +20,10 @@ for (const directory of extensionDirectories) {
   if (fs.existsSync(manifestPath)) {
     const manifest = { ...canonicalManifest };
     manifest.version = packageVersion;
-    manifest.host_permissions = ['https://nexus-chat-free.onrender.com/*'];
+    manifest.host_permissions = [
+      'https://nexus-chat-free.onrender.com/*',
+      'https://raw.githubusercontent.com/thedragon8592/nexus/*',
+    ];
     fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
   }
   generated += 1;

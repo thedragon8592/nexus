@@ -4,7 +4,7 @@
     window.__nexusChatLoaded = true;
     window.__nexusIntegratedOptimizer = true;
 
-    const EXT_VERSION = '3.6.0';
+    const EXT_VERSION = '3.6.1';
     const WEBSITE_URL = 'https://wnexuschat.netlify.app';
     const GREASYFORK_URL = 'https://greasyfork.org/es/scripts/584741-nexus-chat';
     const bootstrap = window.__NEXUS_BOOTSTRAP__ || {};
@@ -21,6 +21,12 @@
     const DISCORD_INVITE = 'https://discord.gg/rDJhfCTDqR';
     const FIRE_GIF_URL = 'https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExd2lyZTFqbGttcWh0d3cwenUwc2R2NzB6aGF4YWw4dzQ0b2FpMXZjbyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/q4voi8znbYANE5GtYI/giphy.gif';
     const MESSAGE_COOLDOWN_MS = 2000;
+    const GITHUB_RELEASES_URL = 'https://github.com/thedragon8592/nexus/releases/latest';
+    const UPDATE_MANIFEST_URLS = [
+        'https://raw.githubusercontent.com/thedragon8592/nexus/main/public/version.json',
+        `${SERVER_URL}/version.json`
+    ];
+    const UPDATE_CHECK_INTERVAL_MS = 10 * 60 * 1000;
 
     function createSocialToken() {
         const bytes = new Uint8Array(32);
@@ -325,6 +331,8 @@
     let historicalProfileRevision = 0;
     let connectionRetryTimer = null;
     let socketLibraryRetryTimer = null;
+    let updateCheckTimer = null;
+    let latestUpdateData = null;
     let killLeaderName = null;
     let killLeaderKills = 0;
     let killLeaderElement = null;
@@ -1672,6 +1680,7 @@
                     <span id="nx-online-count" title="Users in match chat" style="font-size:11px; margin-right:6px; color:#aaa;">0</span>
                     <button id="nx-mention-badge" style="display:none;">0</button>
                     <button id="nx-unread-badge" style="display:none;">0</button>
+                    <button id="nx-update-btn" hidden title="Nexus update available" aria-label="Nexus update available">UP</button>
                     <button id="nx-dnd-btn" title="Do Not Disturb">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 01-3.46 0"/></svg>
                     </button>
@@ -1901,6 +1910,8 @@
                 font-size: 10px; padding: 2px 6px; font-weight: bold;
             }
             #nx-unread-badge { background: #4caf50; }
+            #nx-update-btn.nx-update-ready { display:flex !important; color:#171a10; background:linear-gradient(135deg,var(--nx-accent),var(--nx-accent-2)); font-size:8px; font-weight:950; letter-spacing:.06em; padding:4px 6px; box-shadow:0 0 15px color-mix(in srgb,var(--nx-accent) 38%,transparent); animation:nxUpdatePulse 2.2s ease-in-out infinite; }
+            @keyframes nxUpdatePulse { 50% { transform:translateY(-1px); filter:brightness(1.15); } }
             #nx-dnd-btn.active { color: #ff4444; }
             #nx-dim-btn.active { color: #f39c12; }
             #nx-messages {
@@ -2149,6 +2160,7 @@
         });
 
         document.getElementById('nx-dnd-btn').addEventListener('click', toggleDnd);
+        document.getElementById('nx-update-btn').addEventListener('click', () => latestUpdateData && showUpdateOverlay(latestUpdateData));
         document.getElementById('nx-opt-btn').addEventListener('click', () => showSettingsPage('performance'));
         document.getElementById('nx-dim-btn').addEventListener('click', toggleDim);
         document.getElementById('nx-min-btn').addEventListener('click', toggleMinimize);
@@ -2310,7 +2322,7 @@
         // The game WebSocket interceptor is already active.
         connectToChat();
         attachKillLeaderObserver();
-        checkForUpdate();
+        startUpdateChecks();
     }
 
     function toggleDnd() {
@@ -2742,10 +2754,14 @@
         if (e.key === config.dimKeyChar) { e.preventDefault(); e.stopPropagation(); toggleDim(); }
     }
     document.addEventListener('keydown', globalKeyHandler, true);
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && chatContainer) checkForUpdate();
+    });
     window.addEventListener('pagehide', () => {
         if (historySaveTimer) clearTimeout(historySaveTimer);
         if (connectionRetryTimer) clearTimeout(connectionRetryTimer);
         if (socketLibraryRetryTimer) clearTimeout(socketLibraryRetryTimer);
+        if (updateCheckTimer) clearInterval(updateCheckTimer);
         if (killLeaderSearchTimer) clearTimeout(killLeaderSearchTimer);
         if (killLeaderObserver) killLeaderObserver.disconnect();
         flushHistory();
@@ -2831,111 +2847,133 @@
         if (particles.length) requestAnimationFrame(animateParticles);
     }
 
+    async function fetchUpdateManifest() {
+        for (const source of UPDATE_MANIFEST_URLS) {
+            try {
+                const separator = source.includes('?') ? '&' : '?';
+                const response = await fetch(`${source}${separator}_=${Date.now()}`, { cache: 'no-store' });
+                if (!response.ok) continue;
+                const data = await response.json();
+                if (data && /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(String(data.version || ''))) return data;
+            } catch(e) {}
+        }
+        return null;
+    }
+
+    function exposeAvailableUpdate(data) {
+        latestUpdateData = data;
+        const button = document.getElementById('nx-update-btn');
+        if (!button) return;
+        button.hidden = false;
+        button.classList.add('nx-update-ready');
+        button.title = `Nexus ${data.version} available — click to update`;
+        button.setAttribute('aria-label', button.title);
+    }
+
     async function checkForUpdate() {
-        try {
-            const res = await fetch(`${SERVER_URL}/version.json?_=${Date.now()}`);
-            if (!res.ok) return;
-            const data = await res.json();
-            if (compareVersions(data.version, INSTALLED_VERSION) > 0
-                && sessionStorage.getItem('nexus_update_dismissed') !== data.version) {
-                showUpdateOverlay(data);
-            }
-        } catch(e) {}
+        const data = await fetchUpdateManifest();
+        if (!data || compareVersions(data.version, INSTALLED_VERSION) <= 0) return;
+        exposeAvailableUpdate(data);
+        if (sessionStorage.getItem('nexus_update_dismissed') !== data.version) showUpdateOverlay(data);
+    }
+
+    function startUpdateChecks() {
+        checkForUpdate();
+        if (updateCheckTimer) clearInterval(updateCheckTimer);
+        updateCheckTimer = setInterval(checkForUpdate, UPDATE_CHECK_INTERVAL_MS);
     }
 
     function showUpdateOverlay(data) {
         if (document.getElementById('nx-update-overlay')) return;
 
         const isUserscript = CLIENT_DISTRIBUTION === 'userscript';
-        const updateUrl = isUserscript ? GREASYFORK_URL : WEBSITE_URL;
+        const updateUrl = isUserscript
+            ? (data.userscriptUrl || GREASYFORK_URL)
+            : (data.extensionUrl || GITHUB_RELEASES_URL || WEBSITE_URL);
         const updateTitle = isUserscript ? 'Tampermonkey update available' : 'Extension update available';
         const updateCopy = isUserscript
             ? 'Tampermonkey normally updates Nexus automatically. If it has not updated yet, open Greasy Fork and press Update or Reinstall.'
-            : 'Open the official Nexus website to download the latest extension package, then replace or reload your installed extension.';
+            : 'Download the latest verified ZIP, replace the old extension folder, and reload it from the extensions page.';
         const updateButton = isUserscript ? 'Update on Greasy Fork' : 'Open update page';
 
         const overlay = document.createElement('div');
         overlay.id = 'nx-update-overlay';
+        overlay.className = `theme-${AVAILABLE_THEMES.includes(config.theme) ? config.theme : 'dark'}`;
         overlay.innerHTML = `
             <div id="nx-update-box">
                 <button id="nx-update-close" title="Close">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>
-                <img src="${LOGO_URL}" alt="Nexus Chat" class="nx-logo-img">
-                <span class="nx-update-kicker">NEXUS RELEASE</span>
+                <div class="nx-update-head"><span class="nx-update-mark">N</span><span><b>Nexus Chat</b><small>Release channel</small></span></div>
+                <span class="nx-update-kicker">UPDATE READY</span>
                 <h1 class="nx-title-neon">${updateTitle}</h1>
-                <p class="nx-version">Version ${escapeHtml(String(data.version || ''))}</p>
+                <div class="nx-update-versions"><span>Installed ${escapeHtml(INSTALLED_VERSION)}</span><i>→</i><strong>${escapeHtml(String(data.version || ''))}</strong></div>
                 <p class="nx-update-copy">${updateCopy}</p>
                 <div class="nx-changelog">
-                    <h3>New:</h3>
+                    <h3>What's new</h3>
                     <ul>${(data.changes || []).map(c => `<li>${escapeHtml(String(c))}</li>`).join('')}</ul>
-                    <h3>Fixed:</h3>
+                    <h3>Fixes</h3>
                     <ul>${(data.bugs || []).map(b => `<li>${escapeHtml(String(b))}</li>`).join('')}</ul>
                 </div>
-                <button id="nx-update-download">${updateButton}</button>
+                <div class="nx-update-actions"><button id="nx-update-download">${updateButton}</button><small>You can reopen this notice from the UP badge.</small></div>
             </div>
         `;
 
         const style = document.createElement('style');
         style.textContent = `
             #nx-update-overlay {
-                position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-                background: rgba(0, 0, 0, 0.85);
-                backdrop-filter: blur(12px);
-                -webkit-backdrop-filter: blur(12px);
-                z-index: 100000;
-                display: flex; align-items: center; justify-content: center;
-                animation: fadeIn 0.4s ease;
+                position:fixed; inset:0; z-index:2147483647; display:flex; align-items:flex-start; justify-content:flex-end;
+                padding:18px; box-sizing:border-box; pointer-events:none; color:var(--nx-text,#f6f1df);
+                font-family:Inter,'Segoe UI',system-ui,sans-serif; animation:nxUpdateEnter .3s ease;
             }
-            @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+            @keyframes nxUpdateEnter { from { opacity:0; transform:translateY(-12px); } to { opacity:1; transform:none; } }
             #nx-update-box {
-                background: linear-gradient(150deg, rgba(28,34,24,.98), rgba(12,15,11,.98));
-                border: 1px solid rgba(242,201,76,.28);
-                border-radius: 20px;
-                padding: 40px;
-                text-align: center;
-                max-width: 450px;
-                width: 90%;
-                box-shadow: 0 24px 70px rgba(0,0,0,.82), 0 0 42px rgba(113,133,82,.2);
-                position: relative;
-                color: var(--nx-text, #f0f0f0);
-                font-family: 'Segoe UI', 'Inter', system-ui, sans-serif;
+                pointer-events:auto; position:relative; width:min(410px,calc(100vw - 36px)); max-height:calc(100vh - 36px);
+                overflow:auto; box-sizing:border-box; padding:20px; text-align:left; background:var(--nx-bg);
+                border:1px solid var(--nx-glass-border); border-radius:18px; box-shadow:var(--nx-shadow);
+                backdrop-filter:blur(22px); -webkit-backdrop-filter:blur(22px);
             }
             #nx-update-close {
-                position: absolute; top: 12px; right: 12px;
-                background: none; border: none; color: #888; cursor: pointer;
-                transition: color 0.2s;
+                position:absolute; top:14px; right:14px; width:30px; height:30px; display:grid; place-items:center;
+                background:rgba(255,255,255,.05); border:1px solid var(--nx-glass-border); border-radius:9px;
+                color:var(--nx-text-secondary); cursor:pointer; transition:.18s ease;
             }
-            #nx-update-close:hover { color: #fff; }
-            .nx-logo-img { width: 76px; height: 76px; margin-bottom: 14px; filter: drop-shadow(0 0 14px rgba(242,201,76,.35)); }
-            .nx-update-kicker { display:block; color:#aab29a; font-size:11px; font-weight:800; letter-spacing:.2em; margin-bottom:8px; }
+            #nx-update-close:hover { color:var(--nx-text); border-color:var(--nx-accent); transform:rotate(3deg); }
+            .nx-update-head { display:flex; align-items:center; gap:10px; margin:0 42px 22px 0; }
+            .nx-update-head > span:last-child { display:flex; flex-direction:column; line-height:1.15; }
+            .nx-update-head b { font-size:13px; }
+            .nx-update-head small { color:var(--nx-text-secondary); font-size:9px; margin-top:3px; }
+            .nx-update-mark { width:34px; height:34px; display:grid; place-items:center; border-radius:10px; background:linear-gradient(135deg,var(--nx-accent),var(--nx-accent-2)); color:#15180f; font-weight:950; box-shadow:0 0 22px color-mix(in srgb,var(--nx-accent) 30%,transparent); }
+            .nx-update-kicker { display:block; color:var(--nx-accent); font-size:9px; font-weight:900; letter-spacing:.2em; margin-bottom:7px; }
             .nx-title-neon {
-                font-size: 28px; font-weight: 800;
-                color: #f4eedb;
-                text-shadow: 0 0 18px rgba(242,201,76,.2);
-                margin: 0 0 10px;
+                font-size:23px; line-height:1.12; font-weight:850; color:var(--nx-text); margin:0 0 12px;
             }
-            .nx-version { font-size: 15px; color: #f2c94c; margin: 0 0 12px; font-weight:700; }
-            .nx-update-copy { color:#c9cfbd; font-size:14px; line-height:1.55; margin:0 auto 18px; max-width:390px; }
-            .nx-changelog { text-align: left; margin: 20px 0; font-size: 14px; }
-            .nx-changelog h3 { color: #f2c94c; margin-top: 15px; }
-            .nx-changelog ul { padding-left: 20px; }
-            .nx-changelog li { margin-bottom: 6px; }
+            .nx-update-versions { display:flex; align-items:center; gap:8px; width:max-content; max-width:100%; padding:7px 10px; border-radius:9px; background:var(--nx-input-bg); border:1px solid var(--nx-input-border); font-size:10px; }
+            .nx-update-versions span { color:var(--nx-text-secondary); } .nx-update-versions i { color:var(--nx-accent-2); font-style:normal; } .nx-update-versions strong { color:var(--nx-accent); }
+            .nx-update-copy { color:var(--nx-text-secondary); font-size:12px; line-height:1.55; margin:14px 0 16px; }
+            .nx-changelog { margin:0 0 17px; padding:12px 14px; border-radius:12px; background:rgba(0,0,0,.13); border:1px solid var(--nx-glass-border); font-size:11px; }
+            .nx-changelog h3 { color:var(--nx-accent); margin:5px 0 7px; font-size:10px; letter-spacing:.07em; text-transform:uppercase; }
+            .nx-changelog ul { margin:0 0 10px; padding-left:17px; color:var(--nx-text-secondary); }
+            .nx-changelog li { margin-bottom:5px; line-height:1.35; }
+            .nx-update-actions { display:flex; align-items:center; gap:12px; }
+            .nx-update-actions small { color:var(--nx-text-secondary); font-size:9px; line-height:1.3; }
             #nx-update-download {
-                background: linear-gradient(135deg, #718552, #f2c94c);
-                border: none; color: #11150e; font-weight: 800;
-                padding: 14px 28px; border-radius: 10px;
-                cursor: pointer; font-size: 16px;
-                box-shadow: 0 0 22px rgba(242,201,76,.24);
-                transition: transform 0.2s, box-shadow 0.2s;
-                margin-top: 10px;
+                flex:0 0 auto; background:linear-gradient(135deg,var(--nx-accent),var(--nx-accent-2)); border:0;
+                color:#15180f; font-weight:900; padding:11px 15px; border-radius:10px; cursor:pointer; font-size:11px;
+                box-shadow:0 0 20px color-mix(in srgb,var(--nx-accent) 22%,transparent); transition:.18s ease;
             }
-            #nx-update-download:hover {
-                transform: scale(1.05);
-                box-shadow: 0 0 30px rgba(242,201,76,.4);
-            }
+            #nx-update-download:hover { transform:translateY(-1px); filter:brightness(1.08); }
+            @media (max-width:520px) { #nx-update-overlay { padding:10px; } #nx-update-box { width:calc(100vw - 20px); max-height:calc(100vh - 20px); } }
         `;
+        style.id = 'nx-update-style';
+        document.getElementById('nx-update-style')?.remove();
         document.head.appendChild(style);
+        if (chatContainer) {
+            const chatStyle = getComputedStyle(chatContainer);
+            ['--nx-bg', '--nx-text', '--nx-text-secondary', '--nx-accent', '--nx-accent-2', '--nx-input-bg', '--nx-input-border', '--nx-glass-border', '--nx-shadow'].forEach((property) => {
+                overlay.style.setProperty(property, chatStyle.getPropertyValue(property));
+            });
+        }
         document.body.appendChild(overlay);
 
         playSound('panel');

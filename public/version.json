@@ -1,17 +1,16 @@
 {
-  "version": "3.6.0",
+  "version": "3.6.1",
+  "extensionUrl": "https://github.com/thedragon8592/nexus/releases/latest",
+  "userscriptUrl": "https://greasyfork.org/es/scripts/584741-nexus-chat",
   "changes": [
-    "Kill Leader presentation synchronized live with the current match",
-    "Outgoing friend requests can be reviewed and cancelled",
-    "Profiles show full biographies up to 250 words",
-    "Historical messages follow the account's current display name",
-    "Two-second message cooldown across every channel"
+    "Update checks now use GitHub first with Render as an automatic fallback",
+    "The update notice follows the active Nexus color theme",
+    "A persistent UP badge reopens an available release after dismissal",
+    "Update checks repeat while the game stays open and when the tab becomes active"
   ],
   "bugs": [
-    "Stopped AudioContext autoplay warnings from repeating before user interaction",
-    "Fixed the undefined Kill Leader runtime error",
-    "Added automatic connection retries instead of requiring Reconnect now",
-    "Prevented optimizer progress from remaining stuck after a task error",
-    "Fixed the scroll-to-latest button and stale friend-request actions"
+    "Removed the single Render version endpoint as a point of failure",
+    "Prevented an old ZIP from missing releases when the game stays open",
+    "Replaced the legacy release overlay styling with the current Nexus interface"
   ]
 }
