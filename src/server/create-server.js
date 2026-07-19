@@ -337,6 +337,13 @@ function createNexusServer(options = {}) {
       if (currentAccountId) {
         updatedProfile = await socialStore.updateUsername(currentAccountId, newUsername);
         accountProfiles.set(currentAccountId, updatedProfile);
+        const history = roomHistory.get(currentGame) || [];
+        history.forEach((message) => {
+          if (message.authorId === currentAccountId) {
+            message.author = newUsername;
+            message.profile = updatedProfile;
+          }
+        });
       }
       room.set(socket.id, {
         username: newUsername,
@@ -349,6 +356,7 @@ function createNexusServer(options = {}) {
       socket.to(currentGame).emit('system-message', `${oldName} changed their name to ${newUsername}.`);
       io.to(currentGame).emit('user-list', getUserList(currentGame));
       if (currentAccountId) {
+        io.emit('profile-changed', updatedProfile);
         await refreshFriendPresence(currentAccountId);
         broadcastGlobalUsers();
       }
@@ -464,6 +472,7 @@ function createNexusServer(options = {}) {
         io.to(currentGame).emit('user-list', getUserList(currentGame));
       }
       socket.emit('profile-updated', profile);
+      io.emit('profile-changed', profile);
       await refreshFriendPresence(currentAccountId);
       broadcastGlobalUsers();
     });
@@ -480,9 +489,20 @@ function createNexusServer(options = {}) {
         protocolError(result.code, result.error);
         return;
       }
-      socket.emit('friend-request-sent', { to: result.to });
+      socket.emit('friend-request-sent', { requestId: result.request.id, to: result.to });
       emitToAccount(result.request.toId, 'friend-request-received', { from: result.from });
       await Promise.all([emitSocialUpdate(result.request.toId), emitSocialUpdate(result.request.fromId)]);
+    });
+
+    socket.on('cancel-friend-request', async (requestId) => {
+      if (!currentAccountId || !allow('cancel-friend-request', 6, 30_000) || typeof requestId !== 'string') return;
+      const result = await socialStore.cancelFriendRequest(currentAccountId, requestId);
+      if (!result.ok) {
+        protocolError(result.code, result.error);
+        return;
+      }
+      await Promise.all([emitSocialUpdate(result.request.fromId), emitSocialUpdate(result.request.toId)]);
+      socket.emit('friend-request-cancelled', { requestId, toId: result.request.toId });
     });
 
     socket.on('friend-response', async (payload) => {

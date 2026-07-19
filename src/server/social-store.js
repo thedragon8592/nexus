@@ -187,6 +187,9 @@ class SocialStore {
     const requests = Object.values(this.data.friendRequests)
       .filter((request) => request.toId === userId && request.status === 'pending')
       .map((request) => ({ id: request.id, from: this.publicUser(this.data.users[request.fromId]), createdAt: request.createdAt }));
+    const sentRequests = Object.values(this.data.friendRequests)
+      .filter((request) => request.fromId === userId && request.status === 'pending')
+      .map((request) => ({ id: request.id, to: this.publicUser(this.data.users[request.toId]), createdAt: request.createdAt }));
     const globalHistory = this.data.globalMessages.slice(-MAX_GLOBAL_HISTORY).map((message) => {
       const author = this.data.users[message.authorId];
       return {
@@ -196,7 +199,7 @@ class SocialStore {
         reactions: this.globalReactionCounts(message.id),
       };
     });
-    return { profile: this.publicUser(user), friends, requests, globalHistory };
+    return { profile: this.publicUser(user), friends, requests, sentRequests, globalHistory };
   }
 
   friendIds(userId) {
@@ -231,6 +234,17 @@ class SocialStore {
       if (!from.friendIds.includes(to.id)) from.friendIds.push(to.id);
       if (!to.friendIds.includes(from.id)) to.friendIds.push(from.id);
     }
+    await this.save();
+    return { ok: true, request };
+  }
+
+  async cancelFriendRequest(userId, requestId) {
+    const request = this.data.friendRequests[requestId];
+    if (!request || request.fromId !== userId || request.status !== 'pending') {
+      return { ok: false, code: 'REQUEST_NOT_FOUND', error: 'Pending friend request not found.' };
+    }
+    request.status = 'declined';
+    request.updatedAt = Date.now();
     await this.save();
     return { ok: true, request };
   }
@@ -278,7 +292,11 @@ class SocialStore {
   directHistory(userId, friendId) {
     const user = this.data.users[userId];
     if (!user || !user.friendIds.includes(friendId)) return null;
-    return (this.data.directMessages[this.conversationKey(userId, friendId)] || []).slice(-MAX_DIRECT_HISTORY);
+    return (this.data.directMessages[this.conversationKey(userId, friendId)] || []).slice(-MAX_DIRECT_HISTORY)
+      .map((message) => ({
+        ...message,
+        author: this.data.users[message.fromId]?.username || message.author,
+      }));
   }
 
   async addDirectMessage(fromId, toId, text) {

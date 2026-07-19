@@ -4,7 +4,7 @@
     window.__nexusChatLoaded = true;
     window.__nexusIntegratedOptimizer = true;
 
-    const EXT_VERSION = '3.5.0';
+    const EXT_VERSION = '3.6.0';
     const WEBSITE_URL = 'https://wnexuschat.netlify.app';
     const GREASYFORK_URL = 'https://greasyfork.org/es/scripts/584741-nexus-chat';
     const bootstrap = window.__NEXUS_BOOTSTRAP__ || {};
@@ -13,12 +13,14 @@
         ? 'userscript'
         : (hasExtensionRuntime ? 'extension' : 'web');
     const INSTALLED_VERSION = bootstrap.installedVersion
-        || (CLIENT_DISTRIBUTION === 'userscript' ? '3.4.0' : EXT_VERSION);
+        || EXT_VERSION;
     const SERVER_URL    = window.__NEXUS_BOOTSTRAP__ && window.__NEXUS_BOOTSTRAP__.serverUrl
         ? window.__NEXUS_BOOTSTRAP__.serverUrl
         : 'https://nexus-chat-free.onrender.com';
     const LOGO_URL      = 'https://i.ibb.co/FkXVWJnC/Chat-GPT-Image-26-jun-2026-19-06-21.png';
     const DISCORD_INVITE = 'https://discord.gg/rDJhfCTDqR';
+    const FIRE_GIF_URL = 'https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExd2lyZTFqbGttcWh0d3cwenUwc2R2NzB6aGF4YWw4dzQ0b2FpMXZjbyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/q4voi8znbYANE5GtYI/giphy.gif';
+    const MESSAGE_COOLDOWN_MS = 2000;
 
     function createSocialToken() {
         const bytes = new Uint8Array(32);
@@ -216,11 +218,18 @@
                     setTimeout(() => { overlay.remove(); resolve(); }, 320);
                     return;
                 }
-                document.getElementById('nx-opt-loader-status').textContent = task.label;
-                task.run();
+                const status = document.getElementById('nx-opt-loader-status');
+                if (status) status.textContent = task.label;
+                try {
+                    task.run();
+                } catch (error) {
+                    console.warn(`[NexusChat] Optimizer task failed: ${task.label}`, error);
+                    if (status) status.textContent = `${task.label} skipped safely`;
+                }
                 index += 1;
                 overlay.style.setProperty('--nx-opt-progress', `${Math.round((index / tasks.length) * 100)}%`);
-                document.getElementById('nx-opt-loader-count').textContent = `${index} / ${tasks.length}`;
+                const count = document.getElementById('nx-opt-loader-count');
+                if (count) count.textContent = `${index} / ${tasks.length}`;
                 setTimeout(advance, 140);
             };
             requestAnimationFrame(advance);
@@ -271,6 +280,7 @@
     let socialServerVersion = null;
     let socialFriends = [];
     let socialRequests = [];
+    let socialSentRequests = [];
     let globalUsers = [];
     let globalMessageHistory = [];
     let globalNotices = [];
@@ -307,18 +317,25 @@
     let historyDirty = false;
     let sharedAudioContext = null;
     let sharedAudioFilter = null;
+    let audioUnlocked = false;
     let lastSoundAt = 0;
     let batchRenderDepth = 0;
     let pendingBatchScroll = false;
     let mentionPatternCache = { key: '', pattern: null };
+    let historicalProfileRevision = 0;
+    let connectionRetryTimer = null;
+    let socketLibraryRetryTimer = null;
+    let killLeaderName = null;
+    let killLeaderKills = 0;
+    let killLeaderElement = null;
+    let killLeaderObserver = null;
+    let killLeaderSearchTimer = null;
+    let killLeaderSearchAttempts = 0;
 
     applyPerformanceMode(config.performanceMode);
 
-    function playSound(type) {
-        if (config.dndMode) return;
-        const now = performance.now();
-        if (type !== 'mention' && now - lastSoundAt < 80) return;
-        lastSoundAt = now;
+    function unlockAudio() {
+        audioUnlocked = true;
         try {
             const AudioContextClass = window.AudioContext || window.webkitAudioContext;
             if (!AudioContextClass) return;
@@ -327,6 +344,20 @@
                 sharedAudioFilter = null;
             }
             if (sharedAudioContext.state === 'suspended') sharedAudioContext.resume().catch(() => {});
+        } catch(e) {}
+    }
+
+    document.addEventListener('pointerdown', unlockAudio, { capture: true, passive: true });
+    document.addEventListener('touchstart', unlockAudio, { capture: true, passive: true });
+    document.addEventListener('keydown', unlockAudio, true);
+
+    function playSound(type) {
+        if (config.dndMode) return;
+        const now = performance.now();
+        if (type !== 'mention' && now - lastSoundAt < 80) return;
+        if (!audioUnlocked || !sharedAudioContext || sharedAudioContext.state !== 'running') return;
+        try {
+            lastSoundAt = now;
             const patterns = {
                 open: [[420, 0, .08, 'triangle', .7], [680, .045, .11, 'sine', .85], [980, .09, .13, 'sine', .6]],
                 close: [[880, 0, .07, 'sine', .65], [560, .045, .1, 'triangle', .7], [320, .09, .12, 'sine', .55]],
@@ -409,6 +440,7 @@
             mentionCount = 0; unreadCount = 0;
             updateBadges();
             if (chatSocket) chatSocket.disconnect();
+            chatSocket = null;
             totalMessagesThisGame = 0; totalMentionsThisGame = 0;
             connectToChat();
             startDiscordReminder();
@@ -445,14 +477,52 @@
 
     setupGameIdDetection();
 
+    function scheduleConnectionRetry(delay = 3000) {
+        if (connectionRetryTimer) clearTimeout(connectionRetryTimer);
+        connectionRetryTimer = setTimeout(() => {
+            connectionRetryTimer = null;
+            if (!username || chatSocket?.connected) return;
+            if (chatSocket) chatSocket.connect();
+            else connectToChat();
+            scheduleConnectionRetry(Math.min(delay + 1500, 8000));
+        }, delay);
+    }
+
     function connectToChat() {
         if (!username) return;
         if (chatSocket && chatSocket.connected) return;
+        if (chatSocket) {
+            chatSocket.connect();
+            scheduleConnectionRetry();
+            refreshSettingsDiagnostics();
+            return;
+        }
         if (typeof io === 'undefined') {
+            const existing = document.getElementById('nx-socket-io-loader');
+            if (existing) {
+                if (!socketLibraryRetryTimer) socketLibraryRetryTimer = setTimeout(() => {
+                    socketLibraryRetryTimer = null;
+                    existing.remove();
+                    connectToChat();
+                }, 3000);
+                return;
+            }
             const script = document.createElement('script');
+            script.id = 'nx-socket-io-loader';
             script.src = 'https://cdn.socket.io/4.7.2/socket.io.min.js';
-            script.onload = initSocket;
-            document.head.appendChild(script);
+            script.onload = () => {
+                if (socketLibraryRetryTimer) clearTimeout(socketLibraryRetryTimer);
+                socketLibraryRetryTimer = null;
+                script.remove();
+                initSocket();
+            };
+            script.onerror = () => {
+                script.remove();
+                lastConnectionError = 'Could not load the realtime connection library. Retrying automatically.';
+                refreshSettingsDiagnostics();
+                scheduleConnectionRetry();
+            };
+            (document.head || document.documentElement).appendChild(script);
         } else {
             initSocket();
         }
@@ -461,8 +531,18 @@
     function initSocket() {
         try {
             const roomId = gameId || 'lobby';
-            chatSocket = io(SERVER_URL, { transports: ['websocket', 'polling'], query: { gameId: roomId } });
+            chatSocket = io(SERVER_URL, {
+                transports: ['websocket', 'polling'],
+                query: { gameId: roomId },
+                reconnection: true,
+                reconnectionAttempts: Infinity,
+                reconnectionDelay: 1000,
+                reconnectionDelayMax: 5000,
+                timeout: 20000,
+            });
             chatSocket.on('connect', () => {
+                if (connectionRetryTimer) clearTimeout(connectionRetryTimer);
+                connectionRetryTimer = null;
                 lastConnectionError = '';
                 updateConnectionIndicator(true);
                 chatSocket.emit('join', { gameId: roomId, username, socialToken });
@@ -488,10 +568,12 @@
                 stopDiscordReminder();
                 updateToggleConnectionDot(false);
                 refreshSettingsDiagnostics();
+                scheduleConnectionRetry();
             });
             chatSocket.on('connect_error', (error) => {
                 lastConnectionError = error && error.message ? error.message : 'Connection failed';
                 refreshSettingsDiagnostics();
+                scheduleConnectionRetry();
             });
             chatSocket.on('protocol-error', (payload) => {
                 lastConnectionError = payload && payload.message ? payload.message : 'Protocol error';
@@ -552,6 +634,9 @@
                 socialRequests = Array.isArray(session.requests)
                     ? session.requests.map((request) => ({ ...request, from: cacheProfile(request.from) }))
                     : [];
+                socialSentRequests = Array.isArray(session.sentRequests)
+                    ? session.sentRequests.map((request) => ({ ...request, to: cacheProfile(request.to) }))
+                    : [];
                 globalMessageHistory = Array.isArray(session.globalHistory)
                     ? session.globalHistory.map((message) => ({ ...message, profile: cacheProfile(message.profile) }))
                     : [];
@@ -561,12 +646,16 @@
             });
             chatSocket.on('social-update', (session) => {
                 let channelChanged = false;
+                const profileRevisionBefore = historicalProfileRevision;
                 socialProfile = session.profile ? cacheProfile(session.profile) : socialProfile;
                 socialFriends = Array.isArray(session.friends) ? session.friends.map(cacheProfile) : socialFriends;
                 syncConversationMetadata(socialFriends, false);
                 socialRequests = Array.isArray(session.requests)
                     ? session.requests.map((request) => ({ ...request, from: cacheProfile(request.from) }))
                     : socialRequests;
+                socialSentRequests = Array.isArray(session.sentRequests)
+                    ? session.sentRequests.map((request) => ({ ...request, to: cacheProfile(request.to) }))
+                    : socialSentRequests;
                 if (selectedFriend) {
                     const refreshedFriend = socialFriends.find((friend) => friend.id === selectedFriend.id);
                     if (refreshedFriend) selectedFriend = refreshedFriend;
@@ -577,7 +666,7 @@
                     }
                 }
                 renderSocialSidebar();
-                if (channelChanged) renderActiveChannel();
+                if (channelChanged || profileRevisionBefore !== historicalProfileRevision) renderActiveChannel();
                 else if (activeChannel === 'direct') refreshDirectChannelHeader();
             });
             chatSocket.on('global-message', (message) => {
@@ -628,7 +717,30 @@
                 else if (message.fromId !== socialProfile?.id) incrementSocialUnread(friendId);
             });
             chatSocket.on('friend-request-received', ({ from }) => { playSound('friend'); addChannelNotice(`${from.username} sent you a friend request.`); });
-            chatSocket.on('friend-request-sent', ({ to }) => addChannelNotice(`Friend request sent to ${to.username}.`));
+            chatSocket.on('friend-request-sent', ({ requestId, to }) => {
+                socialSentRequests = socialSentRequests.filter((request) => request.to?.id !== to.id);
+                socialSentRequests.push({ id: requestId, to: cacheProfile(to), createdAt: Date.now() });
+                const button = profilePopover?.querySelector(`[data-profile-add="${CSS.escape(to.id)}"]`);
+                if (button) {
+                    button.removeAttribute('data-profile-add');
+                    button.dataset.profileCancelRequest = requestId;
+                    button.textContent = 'Request sent · cancel';
+                }
+                addChannelNotice(`Friend request sent to ${to.username}.`);
+            });
+            chatSocket.on('friend-request-cancelled', ({ requestId, toId }) => {
+                socialSentRequests = socialSentRequests.filter((request) => request.id !== requestId);
+                if (profilePopover?.dataset.profileId === toId) {
+                    const button = profilePopover.querySelector('[data-profile-cancel-request]');
+                    if (button) {
+                        button.removeAttribute('data-profile-cancel-request');
+                        button.dataset.profileAdd = toId;
+                        button.disabled = false;
+                        button.textContent = 'Add friend';
+                    }
+                }
+                addChannelNotice('Friend request cancelled.');
+            });
             chatSocket.on('friend-removed', ({ friendId }) => {
                 if (selectedFriend?.id === friendId) setActiveChannel('global');
                 addChannelNotice('Friend removed.');
@@ -640,6 +752,13 @@
                 playSound('success');
                 addChannelNotice('Profile saved.');
             });
+            chatSocket.on('profile-changed', (profile) => {
+                const previous = profileCache.get(profile?.id);
+                cacheProfile(profile);
+                if ((!previous || previous.username !== profile?.username || previous.avatarUrl !== profile?.avatarUrl || previous.bio !== profile?.bio) && messageArea) {
+                    renderActiveChannel();
+                }
+            });
             chatSocket.on('system-message', (text) => addSystemMessage(text));
             chatSocket.on('username-change-accepted', ({ newUsername }) => {
                 username = newUsername;
@@ -648,10 +767,12 @@
                 localStorage.setItem('nexus_authorColor', authorColor);
             });
             chatSocket.on('user-list', (users) => {
+                const profileRevisionBefore = historicalProfileRevision;
                 window.__nexusOnlineUsers = (users || []).map((user) => typeof user === 'string' ? { username: user } : user);
                 cacheProfiles(window.__nexusOnlineUsers);
                 const onlineCount = document.getElementById('nx-online-count');
                 if (onlineCount) onlineCount.textContent = users.length;
+                if (profileRevisionBefore !== historicalProfileRevision && activeChannel === 'game') renderActiveChannel();
                 if (isInputFocused) onInputChange();
             });
             chatSocket.on('online-list', (users) => addChannelNotice(`Match online: ${(users || []).map((user) => typeof user === 'string' ? user : user.username).join(', ') || 'Nobody else is online.'}`, 'game'));
@@ -698,7 +819,13 @@
                 channelPolls.global.delete(pollId);
                 messageArea?.querySelector(`.poll-container[data-channel="global"][data-pollid="${CSS.escape(pollId)}"]`)?.remove();
             });
-        } catch(e) { console.error('[NexusChat]', e); }
+        } catch(e) {
+            console.error('[NexusChat]', e);
+            lastConnectionError = e?.message || 'Unable to initialize realtime connection.';
+            chatSocket = null;
+            refreshSettingsDiagnostics();
+            scheduleConnectionRetry();
+        }
     }
 
     function getPlayerName() {
@@ -716,6 +843,64 @@
             return isNaN(kills) ? 0 : kills;
         }
         return 0;
+    }
+
+    function renderKillLeaderBanner() {
+        if (!messageArea || activeChannel !== 'game' || !killLeaderName) {
+            if (killLeaderElement) killLeaderElement.remove();
+            return;
+        }
+        if (!killLeaderElement) {
+            killLeaderElement = document.createElement('div');
+            killLeaderElement.className = 'pinned-msg kill-leader';
+            killLeaderElement.innerHTML = '<span class="kill-leader-crown" aria-hidden="true">♛</span><span class="kill-leader-text"><small>Kill Leader</small><strong></strong><em></em></span>';
+        }
+        killLeaderElement.style.backgroundImage = `linear-gradient(90deg, rgba(12,8,2,.9), rgba(45,25,2,.48)), url("${FIRE_GIF_URL}")`;
+        killLeaderElement.querySelector('strong').textContent = killLeaderName;
+        killLeaderElement.querySelector('em').textContent = `${killLeaderKills} ${killLeaderKills === 1 ? 'kill' : 'kills'}`;
+        if (killLeaderElement.parentElement !== messageArea) messageArea.prepend(killLeaderElement);
+    }
+
+    function updateMessagesForKillLeader() {
+        if (!messageArea) return;
+        const normalizedLeader = String(killLeaderName || '').trim().toLocaleLowerCase();
+        messageArea.querySelectorAll('.user-msg[data-author]').forEach((message) => {
+            const author = String(message.dataset.author || '').trim().toLocaleLowerCase();
+            message.classList.toggle('kill-leader-msg', Boolean(normalizedLeader) && author === normalizedLeader);
+        });
+    }
+
+    function refreshKillLeaderFromGame() {
+        const nameElement = document.getElementById('ui-kill-leader-name');
+        const countElement = document.getElementById('ui-kill-leader-count');
+        if (!nameElement || !countElement) return;
+        const candidate = nameElement.textContent.trim();
+        const kills = Math.max(0, Number.parseInt(countElement.textContent, 10) || 0);
+        const valid = candidate && kills > 0 && !/^(waiting|nobody|none)/i.test(candidate);
+        const nextName = valid ? candidate : null;
+        if (nextName === killLeaderName && kills === killLeaderKills) return;
+        killLeaderName = nextName;
+        killLeaderKills = valid ? kills : 0;
+        updateMessagesForKillLeader();
+        renderKillLeaderBanner();
+    }
+
+    function attachKillLeaderObserver() {
+        if (killLeaderSearchTimer) clearTimeout(killLeaderSearchTimer);
+        killLeaderSearchTimer = null;
+        const nameElement = document.getElementById('ui-kill-leader-name');
+        const countElement = document.getElementById('ui-kill-leader-count');
+        if (!nameElement || !countElement) {
+            killLeaderSearchAttempts += 1;
+            if (killLeaderSearchAttempts <= 20) killLeaderSearchTimer = setTimeout(attachKillLeaderObserver, 750);
+            return;
+        }
+        killLeaderSearchAttempts = 0;
+        if (killLeaderObserver) killLeaderObserver.disconnect();
+        killLeaderObserver = new MutationObserver(refreshKillLeaderFromGame);
+        killLeaderObserver.observe(nameElement, { childList: true, characterData: true, subtree: true });
+        killLeaderObserver.observe(countElement, { childList: true, characterData: true, subtree: true });
+        refreshKillLeaderFromGame();
     }
 
     function updateConnectionIndicator(connected) {
@@ -940,6 +1125,22 @@
         renderSocialSidebar();
     }
 
+    function synchronizeHistoricalProfile(profile) {
+        if (!profile?.id) return;
+        const apply = (message, idKey = 'authorId') => {
+            if (message?.[idKey] !== profile.id) return;
+            message.author = profile.username;
+            message.profile = profile;
+        };
+        messageHistory.forEach((message) => apply(message));
+        globalMessageHistory.forEach((message) => apply(message));
+        directMessageHistory.forEach((messages) => messages.forEach((message) => apply(message, 'fromId')));
+        const friend = socialFriends.find((entry) => entry.id === profile.id);
+        if (friend) Object.assign(friend, profile);
+        if (selectedFriend?.id === profile.id) selectedFriend = { ...selectedFriend, ...profile };
+        historicalProfileRevision += 1;
+    }
+
     function cacheProfile(profile) {
         if (profile && profile.id) {
             const current = profileCache.get(profile.id);
@@ -948,6 +1149,9 @@
             if (current && currentVersion && incomingVersion && incomingVersion < currentVersion) return current;
             const merged = { ...(current || {}), ...profile };
             profileCache.set(profile.id, merged);
+            if (current && (current.username !== merged.username || current.avatarUrl !== merged.avatarUrl || current.bio !== merged.bio)) {
+                synchronizeHistoricalProfile(merged);
+            }
             if (profileCache.size > 250) {
                 const removableId = Array.from(profileCache.keys()).find((id) => id !== socialProfile?.id && !socialFriends.some((friend) => friend.id === id));
                 if (removableId) profileCache.delete(removableId);
@@ -1050,8 +1254,19 @@
                 const addButton = event.target.closest('[data-profile-add]');
                 if (addButton) {
                     const targetProfile = profileCache.get(addButton.dataset.profileAdd);
-                    if (targetProfile?.friendCode) chatSocket?.emit('friend-request', targetProfile.friendCode);
-                    hideProfilePopover(0);
+                    if (targetProfile?.friendCode && chatSocket?.connected) {
+                        chatSocket.emit('friend-request', targetProfile.friendCode);
+                        addButton.disabled = true;
+                        addButton.textContent = 'Sending request…';
+                    }
+                    return;
+                }
+                const cancelButton = event.target.closest('[data-profile-cancel-request]');
+                if (cancelButton) {
+                    chatSocket?.emit('cancel-friend-request', cancelButton.dataset.profileCancelRequest);
+                    cancelButton.disabled = true;
+                    cancelButton.textContent = 'Cancelling…';
+                    return;
                 }
                 const removeButton = event.target.closest('[data-profile-remove]');
                 if (removeButton) {
@@ -1063,17 +1278,19 @@
             document.body.appendChild(profilePopover);
         }
         const friend = socialFriends.find((item) => item.id === profile.id);
+        const sentRequest = socialSentRequests.find((request) => request.to?.id === profile.id);
         const own = profile.id === socialProfile?.id;
-        profilePopover.innerHTML = `${avatarMarkup(profile, 'nx-avatar nx-avatar-popover')}<div class="nx-popover-copy"><strong>${escapeHtml(profile.username)}</strong><span>${profile.online || friend?.online ? 'Online' : 'Offline'}</span><p>${escapeHtml(profile.bio || 'No bio yet.')}</p><small>${escapeHtml(profile.friendCode || '')}</small></div>${own ? '' : (friend ? `<button data-profile-remove="${escapeHtml(profile.id)}">Remove friend</button>` : (profile.friendCode ? `<button data-profile-add="${escapeHtml(profile.id)}">Add friend</button>` : ''))}`;
+        profilePopover.dataset.profileId = profile.id;
+        profilePopover.innerHTML = `${avatarMarkup(profile, 'nx-avatar nx-avatar-popover')}<div class="nx-popover-copy"><strong>${escapeHtml(profile.username)}</strong><span>${profile.online || friend?.online ? 'Online' : 'Offline'}</span><p>${escapeHtml(profile.bio || 'No bio yet.')}</p><small>${escapeHtml(profile.friendCode || '')}</small></div>${own ? '' : (friend ? `<button data-profile-remove="${escapeHtml(profile.id)}">Remove friend</button>` : (sentRequest ? `<button data-profile-cancel-request="${escapeHtml(sentRequest.id)}">Request sent · cancel</button>` : (profile.friendCode ? `<button data-profile-add="${escapeHtml(profile.id)}">Add friend</button>` : '')))}`;
         const chatStyle = getComputedStyle(chatContainer);
         ['--nx-bg', '--nx-text', '--nx-text-secondary', '--nx-accent', '--nx-accent-2', '--nx-glass-border'].forEach((property) => {
             profilePopover.style.setProperty(property, chatStyle.getPropertyValue(property));
         });
         profilePopover.hidden = false;
         const rect = anchor.getBoundingClientRect();
-        const width = 260;
+        const width = Math.min(380, window.innerWidth - 24);
         const left = Math.min(window.innerWidth - width - 12, Math.max(12, rect.right + 10));
-        const top = Math.min(window.innerHeight - 190, Math.max(12, rect.top - 30));
+        const top = Math.min(window.innerHeight - Math.min(420, window.innerHeight - 24), Math.max(12, rect.top - 50));
         Object.assign(profilePopover.style, { left: `${left}px`, top: `${top}px` });
     }
 
@@ -1170,7 +1387,8 @@
         const div = document.createElement('div');
         div.className = `user-msg social-msg ${own ? 'own-msg' : 'other-msg'}${message.private ? ' private-msg' : ''}`;
         div.dataset.msgid = message.id || message.messageId || '';
-        div.dataset.author = message.author || profile.username;
+        const displayAuthor = profile.username || message.author || 'Player';
+        div.dataset.author = displayAuthor;
         div.dataset.profileId = profile.id || '';
         const meta = document.createElement('div');
         meta.className = 'nx-message-meta';
@@ -1178,7 +1396,7 @@
         const author = document.createElement('strong');
         author.className = 'nx-profile-trigger';
         author.dataset.profileId = profile.id || '';
-        author.textContent = message.author || profile.username;
+        author.textContent = displayAuthor;
         const time = document.createElement('time');
         time.textContent = new Date(message.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         meta.append(author, time);
@@ -1245,6 +1463,7 @@
             ));
             renderChannelPin(activeChannel);
         }
+        renderKillLeaderBanner();
         const typing = document.getElementById('nx-typing');
         if (typing) typing.style.display = '';
         updateTypingIndicator();
@@ -1271,7 +1490,7 @@
             inputField.focus();
             stopTyping();
             sendCooldown = true; sendBtn.disabled = true;
-            setTimeout(() => { sendCooldown = false; sendBtn.disabled = false; }, 800);
+            setTimeout(() => { sendCooldown = false; sendBtn.disabled = false; }, MESSAGE_COOLDOWN_MS);
             return;
         }
         if (activeChannel === 'global') {
@@ -1313,7 +1532,7 @@
             inputField.focus();
             stopTyping();
             sendCooldown = true; sendBtn.disabled = true;
-            setTimeout(() => { sendCooldown = false; sendBtn.disabled = false; }, 800);
+            setTimeout(() => { sendCooldown = false; sendBtn.disabled = false; }, MESSAGE_COOLDOWN_MS);
             return;
         }
         if (text === '/help') {
@@ -1358,7 +1577,7 @@
         stopTyping();
         if (isDim) applyDim(true); else { clearIdle(); startIdleTimer(); }
         sendCooldown = true; sendBtn.disabled = true;
-        setTimeout(() => { sendCooldown = false; sendBtn.disabled = false; }, 2000);
+        setTimeout(() => { sendCooldown = false; sendBtn.disabled = false; }, MESSAGE_COOLDOWN_MS);
     }
 
     function isAtBottom() {
@@ -1375,7 +1594,15 @@
         userScrolled = false;
         updateScrollButton();
         if (config.performanceMode !== 'native' || isDim || document.hidden) smooth = false;
-        if (!smooth) { messageArea.scrollTop = messageArea.scrollHeight; return; }
+        if (!smooth) {
+            messageArea.scrollTop = messageArea.scrollHeight;
+            requestAnimationFrame(() => {
+                messageArea.scrollTop = messageArea.scrollHeight;
+                userScrolled = false;
+                updateScrollButton();
+            });
+            return;
+        }
         const target = messageArea.scrollHeight;
         const start = messageArea.scrollTop;
         const duration = 200;
@@ -1691,7 +1918,7 @@
                 font-size: 18px; cursor: pointer; z-index: 10;
                 display: flex; align-items: center; justify-content: center;
                 backdrop-filter: blur(8px); transition: opacity 0.3s, transform 0.3s;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+                box-shadow: 0 2px 8px rgba(0,0,0,0.4); z-index:12; pointer-events:auto;
             }
             #nx-scroll-bottom.hidden { opacity: 0; transform: scale(0.8); pointer-events: none; }
             #nx-typing { padding: 4px 8px; font-size: 11px; color: #4caf50; font-style: italic; min-height: 18px; }
@@ -1732,6 +1959,14 @@
             .poll-option { display: block; width: 100%; text-align: left; background: rgba(255,255,255,0.065); border: 1px solid var(--nx-glass-border); color: var(--nx-text); padding: 7px 9px; margin-bottom: 5px; border-radius: 8px; cursor: pointer; }
             .poll-option:hover { background: rgba(255,255,255,0.15); }
             .pinned-msg { background: linear-gradient(90deg, rgba(242,201,76,.11), rgba(113,133,82,.1)); padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--nx-glass-border); font-style: normal; border-radius: 10px; display: flex; align-items: center; gap: 7px; }
+            .kill-leader { position:relative; min-height:52px; overflow:hidden; flex:none; justify-content:center; border-color:#ffd65a; background-position:center; background-size:cover; box-shadow:0 8px 24px rgba(255,174,0,.22); color:#fff8dc; }
+            .kill-leader-crown { position:relative; z-index:1; color:#ffd65a; font-size:25px; filter:drop-shadow(0 0 8px rgba(255,196,54,.65)); }
+            .kill-leader-text { position:relative; z-index:1; display:grid; gap:1px; min-width:0; }
+            .kill-leader-text small { color:#ffd65a; font-size:8px; font-weight:900; letter-spacing:.18em; text-transform:uppercase; }
+            .kill-leader-text strong { max-width:230px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
+            .kill-leader-text em { color:#ffe8a3; font-size:9px; font-style:normal; }
+            .kill-leader-msg { border-color:rgba(255,214,90,.7) !important; background:linear-gradient(90deg,rgba(255,196,54,.12),transparent) !important; box-shadow:inset 3px 0 #ffd65a !important; }
+            html[data-nexus-performance="low-power"] .kill-leader { background-image:linear-gradient(90deg,#211704,#453006) !important; box-shadow:none; }
             .kills-badge {
                 display: inline-block;
                 background: rgba(0,0,0,0.4);
@@ -1752,12 +1987,13 @@
             .nx-message-meta { display: flex; align-items: center; gap: 8px; }
             .nx-message-meta time { color: var(--nx-text-secondary); font-size: 9px; }
             .nx-profile-trigger { cursor:pointer; }
-            #nx-profile-popover { position:fixed; z-index:100010; width:260px; box-sizing:border-box; display:grid; grid-template-columns:48px 1fr; gap:11px; padding:13px; color:var(--nx-text); background:var(--nx-bg); border:1px solid var(--nx-glass-border); border-radius:16px; box-shadow:0 20px 60px rgba(0,0,0,.7); backdrop-filter:blur(22px); }
+            #nx-profile-popover { position:fixed; z-index:100010; width:min(380px,calc(100vw - 24px)); max-height:min(420px,calc(100vh - 24px)); overflow:auto; box-sizing:border-box; display:grid; grid-template-columns:68px minmax(0,1fr); gap:14px; padding:17px; color:var(--nx-text); background:var(--nx-bg); border:1px solid var(--nx-glass-border); border-radius:18px; box-shadow:0 20px 60px rgba(0,0,0,.7); backdrop-filter:blur(22px); }
             #nx-profile-popover[hidden] { display:none; }
             #nx-profile-popover .nx-popover-copy { min-width:0; display:grid; gap:3px; }
-            #nx-profile-popover strong { font-size:14px; overflow:hidden; text-overflow:ellipsis; }
-            #nx-profile-popover span, #nx-profile-popover small { color:var(--nx-text-secondary); font-size:9px; }
-            #nx-profile-popover p { margin:4px 0; color:var(--nx-text); font-size:11px; line-height:1.4; overflow-wrap:anywhere; }
+            #nx-profile-popover .nx-avatar-popover { width:68px; height:68px; font-size:22px; }
+            #nx-profile-popover strong { font-size:17px; overflow:hidden; text-overflow:ellipsis; }
+            #nx-profile-popover span, #nx-profile-popover small { color:var(--nx-text-secondary); font-size:10px; }
+            #nx-profile-popover p { margin:7px 0; color:var(--nx-text); font-size:12px; line-height:1.55; overflow-wrap:anywhere; white-space:pre-wrap; }
             #nx-profile-popover > button { grid-column:1 / -1; border:0; border-radius:9px; padding:8px; background:linear-gradient(135deg,var(--nx-accent),var(--nx-accent-2)); color:#11170f; font-weight:800; cursor:pointer; }
             #nx-toggle {
                 position: fixed; bottom: 20px; left: 20px;
@@ -1905,7 +2141,12 @@
             userScrolled = !isAtBottom();
             updateScrollButton();
         });
-        scrollToBottomBtn.addEventListener('click', () => { userScrolled = false; scrollToBottom(true); });
+        scrollToBottomBtn.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            userScrolled = false;
+            scrollToBottom(config.performanceMode === 'native');
+        });
 
         document.getElementById('nx-dnd-btn').addEventListener('click', toggleDnd);
         document.getElementById('nx-opt-btn').addEventListener('click', () => showSettingsPage('performance'));
@@ -2068,6 +2309,7 @@
         renderActiveChannel();
         // The game WebSocket interceptor is already active.
         connectToChat();
+        attachKillLeaderObserver();
         checkForUpdate();
     }
 
@@ -2094,7 +2336,6 @@
             if (settingsPanel) settingsPanel.style.display = 'none';
             hideProfilePopover(0);
             if (scrollAnimationId) { cancelAnimationFrame(scrollAnimationId); scrollAnimationId = null; }
-            if (sharedAudioContext && sharedAudioContext.state === 'running') sharedAudioContext.suspend().catch(() => {});
         } else {
             renderActiveChannel();
             if (!isInputFocused && !isHovering) startIdleTimer();
@@ -2139,8 +2380,9 @@
     function addMessage(author, text, isBlocked=false, isMention=false, isPrivate=false, msgAuthorColor='#b0b0b0', messageId, skipSave = false, authorKills = 0, profile = null, initialReactions = {}) {
         const msgId = messageId || (Date.now() + '-' + Math.random().toString(36).substring(2,9));
         const resolvedProfile = cacheProfile(profile) || { id: '', username: author, avatarUrl: '', bio: '' };
-        isBlocked = author !== username && isUserBlocked(resolvedProfile, author);
-        const msgObj = { author, authorId: resolvedProfile.id, profile: resolvedProfile, reactions: initialReactions || {}, text, isBlocked, isMention, isPrivate, msgAuthorColor, msgId, authorKills };
+        const displayAuthor = resolvedProfile.username || author;
+        isBlocked = displayAuthor !== username && isUserBlocked(resolvedProfile, displayAuthor);
+        const msgObj = { author: displayAuthor, authorId: resolvedProfile.id, profile: resolvedProfile, reactions: initialReactions || {}, text, isBlocked, isMention, isPrivate, msgAuthorColor, msgId, authorKills };
         if (!skipSave) {
             messageHistory.push(msgObj);
             if (messageHistory.length > 100) messageHistory = messageHistory.slice(-100);
@@ -2149,9 +2391,9 @@
         if (isBlocked) {
             const placeholder = document.createElement('div');
             placeholder.className = 'blocked-placeholder';
-            placeholder.setAttribute('data-author', author);
+            placeholder.setAttribute('data-author', displayAuthor);
             placeholder.dataset.profileId = resolvedProfile.id || '';
-            placeholder.innerHTML = `Blocked message from ${escapeHtml(author)} <button class="unblock-btn" data-profile-id="${escapeHtml(resolvedProfile.id || '')}">Unblock</button>`;
+            placeholder.innerHTML = `Blocked message from ${escapeHtml(displayAuthor)} <button class="unblock-btn" data-profile-id="${escapeHtml(resolvedProfile.id || '')}">Unblock</button>`;
             messageArea.appendChild(placeholder); scrollToBottom(); return;
         }
         const now = Date.now();
@@ -2161,13 +2403,13 @@
             messageArea.appendChild(sep);
         }
         lastMessageTime = now;
-        const own = (author === username);
+        const own = (displayAuthor === username);
         const effectiveColor = sanitizeColor(msgAuthorColor || authorColor);
         const div = document.createElement('div');
         div.className = 'user-msg ' + (own ? 'own-msg' : 'other-msg') + (isPrivate ? ' private-msg' : '');
-        div.setAttribute('data-msgid', msgId); div.setAttribute('data-author', author); div.dataset.profileId = resolvedProfile.id || ''; div.classList.add('blocked-real');
+        div.setAttribute('data-msgid', msgId); div.setAttribute('data-author', displayAuthor); div.dataset.profileId = resolvedProfile.id || ''; div.classList.add('blocked-real');
 
-        if (author === killLeaderName) {
+        if (String(displayAuthor).trim().toLocaleLowerCase() === String(killLeaderName || '').trim().toLocaleLowerCase()) {
             div.classList.add('kill-leader-msg');
         }
 
@@ -2191,7 +2433,7 @@
         const contentSpan = document.createElement('span');
         if (isPrivate) contentSpan.appendChild(document.createTextNode('Private · '));
         const killsBadge = document.createElement('span'); killsBadge.className = 'kills-badge'; killsBadge.textContent = `(${kills}💀) `;
-        const authorNode = document.createElement('strong'); authorNode.style.color = effectiveColor; authorNode.textContent = `${author}:`;
+        const authorNode = document.createElement('strong'); authorNode.style.color = effectiveColor; authorNode.textContent = `${displayAuthor}:`;
         authorNode.className = 'nx-profile-trigger'; authorNode.dataset.profileId = resolvedProfile.id || '';
         const body = document.createElement('span'); if (isMention) body.classList.add('mention'); renderRichText(body, ` ${text}`);
         contentSpan.append(killsBadge, authorNode, body);
@@ -2205,14 +2447,14 @@
             <button class="reaction-btn" data-emoji="😮" title="Wow"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/><circle cx="12" cy="15" r="1"/></svg></button>
             <button class="reaction-btn" data-emoji="❤️" title="Love"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg></button>
             <button class="reaction-btn" data-emoji="🔥" title="Fire"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8.5 14.5A2.5 2.5 0 0011 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 11-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 002.5 2.5z"/></svg></button>
-            ${own ? '' : `<button class="block-btn" data-profile-id="${escapeHtml(resolvedProfile.id || '')}" title="${isUserBlocked(resolvedProfile, author) ? 'Unblock' : 'Block'} user">${isUserBlocked(resolvedProfile, author) ? 'Unlock' : 'Block'}</button>`}
+            ${own ? '' : `<button class="block-btn" data-profile-id="${escapeHtml(resolvedProfile.id || '')}" title="${isUserBlocked(resolvedProfile, displayAuthor) ? 'Unblock' : 'Block'} user">${isUserBlocked(resolvedProfile, displayAuthor) ? 'Unlock' : 'Block'}</button>`}
         `;
         if (isPrivate) bar.querySelectorAll('.reaction-btn').forEach((button) => button.remove());
         div.appendChild(bar);
         if (!isPrivate) {
             const reactionsSpan = document.createElement('span'); reactionsSpan.className = 'reactions'; renderReactionCounts(reactionsSpan, initialReactions || {}); div.appendChild(reactionsSpan);
         }
-        if (!own && isUserBlocked(resolvedProfile, author)) div.classList.add('blocked-hidden');
+        if (!own && isUserBlocked(resolvedProfile, displayAuthor)) div.classList.add('blocked-hidden');
         messageArea.appendChild(div); scrollToBottom();
     }
 
@@ -2291,9 +2533,6 @@
         chatContainer.classList.add('nx-hidden');
         setTimeout(() => { if (!isChatOpen) chatContainer.style.display = 'none'; }, 300);
         isChatOpen = false; toggleIcon.style.display = 'flex'; clearIdle(); playSound('close');
-        setTimeout(() => {
-            if (!isChatOpen && sharedAudioContext && sharedAudioContext.state === 'running') sharedAudioContext.suspend().catch(() => {});
-        }, 220);
     }
 
     async function copyText(value) {
@@ -2314,6 +2553,7 @@
         const safeName = String(username || '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
         const safeAvatar = escapeHtml(socialProfile?.avatarUrl || '');
         const safeBio = escapeHtml(socialProfile?.bio || '');
+        const safeBioWords = String(socialProfile?.bio || '').trim().split(/\s+/).filter(Boolean).length;
         settingsPanel.innerHTML = `
             <div class="nx-settings-head"><div><strong>Nexus Settings</strong><span>Customize chat, profile, and connection</span></div><button id="nx-settings-close" class="nx-secondary-btn" aria-label="Close">&times;</button></div>
             <div class="nx-settings-shell">
@@ -2338,6 +2578,11 @@
         const displayNameLabel = displayNameInput?.closest('label');
         if (displayNameLabel) {
             displayNameLabel.innerHTML = `Game name<div class="nx-readonly-value" role="textbox" aria-readonly="true">${safeName}</div><small class="nx-readonly-note">Change your name in the game. Nexus follows it automatically.</small>`;
+        }
+        const profileBioInput = document.getElementById('cfg-bio');
+        if (profileBioInput) {
+            profileBioInput.maxLength = 2000;
+            profileBioInput.insertAdjacentHTML('afterend', `<small id="cfg-bio-count" class="nx-settings-note">${safeBioWords} / 250 words</small>`);
         }
         const renderedMessagesCard = document.getElementById('cfg-performance-messages')?.closest('.nx-status-card');
         if (renderedMessagesCard) renderedMessagesCard.insertAdjacentHTML('beforebegin', '<div class="nx-status-card"><span>Client rotation</span><strong id="cfg-performance-rotation">—</strong></div>');
@@ -2365,8 +2610,17 @@
             const avatarUrl = document.getElementById('cfg-avatar-url').value.trim();
             const bio = document.getElementById('cfg-bio').value.trim();
             if (avatarUrl && !/^https:\/\//i.test(avatarUrl)) { showError('Avatar URL must use HTTPS.'); return; }
+            if (bio.split(/\s+/).filter(Boolean).length > 250) { showError('Bio must contain at most 250 words.'); return; }
             chatSocket?.emit('profile-update', { avatarUrl, bio });
             this.textContent = 'Saving…'; setTimeout(() => { this.textContent = 'Save profile'; }, 1200);
+        });
+        document.getElementById('cfg-bio').addEventListener('input', function() {
+            const words = this.value.trim().split(/\s+/).filter(Boolean).length;
+            const counter = document.getElementById('cfg-bio-count');
+            if (counter) {
+                counter.textContent = `${words} / 250 words`;
+                counter.classList.toggle('nx-status-error', words > 250);
+            }
         });
         document.getElementById('cfg-import-key').addEventListener('click', function() {
             const input = document.getElementById('cfg-recovery-key');
@@ -2406,11 +2660,14 @@
             button.disabled = true;
             config.performanceMode = select.value;
             saveConfig();
-            await applyPerformanceMode(config.performanceMode, { showProgress: true });
-            select.disabled = false;
-            button.disabled = false;
-            playSound('success');
-            addChannelNotice(`${selectedPerformanceProfile().label} optimization applied without reloading.`);
+            try {
+                await applyPerformanceMode(config.performanceMode, { showProgress: true });
+                playSound('success');
+                addChannelNotice(`${selectedPerformanceProfile().label} optimization applied without reloading.`);
+            } finally {
+                select.disabled = false;
+                button.disabled = false;
+            }
         };
         document.getElementById('cfg-performance').addEventListener('change', applySelectedPerformance);
         document.getElementById('cfg-apply-performance').addEventListener('click', applySelectedPerformance);
@@ -2487,6 +2744,10 @@
     document.addEventListener('keydown', globalKeyHandler, true);
     window.addEventListener('pagehide', () => {
         if (historySaveTimer) clearTimeout(historySaveTimer);
+        if (connectionRetryTimer) clearTimeout(connectionRetryTimer);
+        if (socketLibraryRetryTimer) clearTimeout(socketLibraryRetryTimer);
+        if (killLeaderSearchTimer) clearTimeout(killLeaderSearchTimer);
+        if (killLeaderObserver) killLeaderObserver.disconnect();
         flushHistory();
         if (sharedAudioContext && sharedAudioContext.state === 'running') sharedAudioContext.suspend().catch(() => {});
     });

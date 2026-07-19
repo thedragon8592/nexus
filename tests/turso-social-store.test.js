@@ -33,6 +33,10 @@ test('Turso persists accounts, friendships and chat history across restarts', as
   const alice = await first.register('Alice');
   const bob = await first.register('Bob');
 
+  const cancelledRequest = await first.requestFriend(alice.user.id, bob.user.friendCode);
+  assert.equal((await first.snapshot(alice.user.id)).sentRequests[0].to.username, 'Bob');
+  assert.equal((await first.cancelFriendRequest(alice.user.id, cancelledRequest.request.id)).ok, true);
+  assert.deepEqual((await first.snapshot(alice.user.id)).sentRequests, []);
   const request = await first.requestFriend(alice.user.id, bob.user.friendCode);
   assert.equal(request.ok, true);
   assert.equal((await first.respondToFriendRequest(bob.user.id, request.request.id, true)).ok, true);
@@ -40,6 +44,7 @@ test('Turso persists accounts, friendships and chat history across restarts', as
   const globalMessage = await first.addGlobalMessage(alice.user.id, 'persistent global');
   await first.addGlobalReaction(bob.user.id, globalMessage.id, '❤️');
   await first.addDirectMessage(alice.user.id, bob.user.id, 'persistent direct');
+  await first.updateUsername(alice.user.id, 'AliceNew');
   await first.close();
 
   second = new TursoSocialStore({ url, authToken: 'local-test-token' });
@@ -52,6 +57,7 @@ test('Turso persists accounts, friendships and chat history across restarts', as
   assert.equal(aliceSnapshot.globalHistory[0].text, 'persistent global');
   assert.equal(aliceSnapshot.globalHistory[0].reactions['❤️'], 1);
   assert.equal((await second.directHistory(alice.user.id, bob.user.id))[0].text, 'persistent direct');
+  assert.equal((await second.directHistory(alice.user.id, bob.user.id))[0].author, 'AliceNew');
   const bobSnapshot = await second.snapshot(bob.user.id);
   assert.equal(bobSnapshot.friends[0].conversation.unreadCount, 1);
   assert.equal(bobSnapshot.friends[0].conversation.lastMessageText, 'persistent direct');

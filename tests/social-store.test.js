@@ -66,3 +66,21 @@ test('offline direct messages expose persistent unread counts and recent convers
   assert.equal(afterRead.friends.find((friend) => friend.id === bob.user.id).conversation.unreadCount, 0);
   assert.equal(afterRead.friends.find((friend) => friend.id === charlie.user.id).conversation.unreadCount, 1);
 });
+
+test('sent friend requests can be cancelled and old direct messages use the current name', async () => {
+  const store = new SocialStore(null);
+  const alice = await store.register('Alice');
+  const bob = await store.register('Bob');
+
+  const pending = await store.requestFriend(alice.user.id, bob.user.friendCode);
+  assert.equal(store.snapshot(alice.user.id).sentRequests[0].to.username, 'Bob');
+  assert.equal(await store.cancelFriendRequest(alice.user.id, pending.request.id).then((result) => result.ok), true);
+  assert.deepEqual(store.snapshot(alice.user.id).sentRequests, []);
+  assert.deepEqual(store.snapshot(bob.user.id).requests, []);
+
+  const accepted = await store.requestFriend(alice.user.id, bob.user.friendCode);
+  await store.respondToFriendRequest(bob.user.id, accepted.request.id, true);
+  await store.addDirectMessage(alice.user.id, bob.user.id, 'remember my current name');
+  await store.updateUsername(alice.user.id, 'AliceNew');
+  assert.equal(store.directHistory(bob.user.id, alice.user.id)[0].author, 'AliceNew');
+});

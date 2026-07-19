@@ -206,7 +206,7 @@ class TursoSocialStore {
 
   async snapshot(userId, onlineIds = new Set()) {
     await this.ready;
-    const [userRow, friendsResult, requestsResult, globalResult, reactionResult, conversationResult] = await Promise.all([
+    const [userRow, friendsResult, requestsResult, sentRequestsResult, globalResult, reactionResult, conversationResult] = await Promise.all([
       this.findById(userId),
       this.client.execute({
         sql: `SELECT u.* FROM friendships f
@@ -222,6 +222,17 @@ class TursoSocialStore {
               FROM friend_requests r
               JOIN users u ON u.id = r.from_id
               WHERE r.to_id = ? AND r.status = 'pending'
+              ORDER BY r.created_at`,
+        args: [userId],
+      }),
+      this.client.execute({
+        sql: `SELECT r.id, r.created_at, u.id AS to_id, u.username AS to_username,
+                     u.friend_code AS to_friend_code, u.avatar_url AS to_avatar_url,
+                     u.bio AS to_bio, u.created_at AS to_created_at,
+                     u.updated_at AS to_updated_at
+              FROM friend_requests r
+              JOIN users u ON u.id = r.to_id
+              WHERE r.from_id = ? AND r.status = 'pending'
               ORDER BY r.created_at`,
         args: [userId],
       }),
@@ -302,6 +313,19 @@ class TursoSocialStore {
       },
       createdAt: Number(row.created_at),
     }));
+    const sentRequests = sentRequestsResult.rows.map((row) => ({
+      id: String(row.id),
+      to: {
+        id: String(row.to_id),
+        username: String(row.to_username),
+        friendCode: String(row.to_friend_code),
+        avatarUrl: String(row.to_avatar_url || ''),
+        bio: String(row.to_bio || ''),
+        createdAt: Number(row.to_created_at),
+        updatedAt: Number(row.to_updated_at || row.to_created_at),
+      },
+      createdAt: Number(row.created_at),
+    }));
     const reactionsByMessage = new Map();
     reactionResult.rows.forEach((row) => {
       const messageId = String(row.message_id);
@@ -329,7 +353,7 @@ class TursoSocialStore {
         reactions: reactionsByMessage.get(String(row.id)) || {},
       };
     });
-    return { profile: publicUser(userRow), friends, requests, globalHistory };
+    return { profile: publicUser(userRow), friends, requests, sentRequests, globalHistory };
   }
 
   async requestFriend(fromId, friendCode) {
@@ -423,6 +447,29 @@ class TursoSocialStore {
     }
   }
 
+  async cancelFriendRequest(userId, requestId) {
+    await this.ready;
+    const result = await this.client.execute({
+      sql: `SELECT id, from_id, to_id, created_at FROM friend_requests
+            WHERE id = ? AND from_id = ? AND status = 'pending' LIMIT 1`,
+      args: [requestId, userId],
+    });
+    const row = result.rows[0];
+    if (!row) return { ok: false, code: 'REQUEST_NOT_FOUND', error: 'Pending friend request not found.' };
+    const updatedAt = Date.now();
+    await this.client.execute({
+      sql: "UPDATE friend_requests SET status = 'declined', updated_at = ? WHERE id = ?",
+      args: [updatedAt, requestId],
+    });
+    return {
+      ok: true,
+      request: {
+        id: String(row.id), fromId: String(row.from_id), toId: String(row.to_id),
+        status: 'declined', createdAt: Number(row.created_at), updatedAt,
+      },
+    };
+  }
+
   async removeFriend(userId, friendId) {
     await this.ready;
     const transaction = await this.client.transaction('write');
@@ -503,15 +550,17 @@ class TursoSocialStore {
     });
     if (!friendship.rows.length) return null;
     const result = await this.client.execute({
-      sql: `SELECT id, from_id, to_id, author, text, timestamp FROM direct_messages
-            WHERE conversation_key = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?`,
+      sql: `SELECT dm.id, dm.from_id, dm.to_id, dm.author, dm.text, dm.timestamp,
+                   u.username AS current_author
+            FROM direct_messages dm LEFT JOIN users u ON u.id = dm.from_id
+            WHERE dm.conversation_key = ? ORDER BY dm.timestamp DESC, dm.rowid DESC LIMIT ?`,
       args: [conversationKey(userId, friendId), MAX_DIRECT_HISTORY],
     });
     return result.rows.reverse().map((row) => ({
       id: String(row.id),
       fromId: String(row.from_id),
       toId: String(row.to_id),
-      author: String(row.author),
+      author: String(row.current_author || row.author),
       text: String(row.text),
       timestamp: Number(row.timestamp),
     }));
