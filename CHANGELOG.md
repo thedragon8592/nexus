@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.7.0 - Integrated Nexus 75 optimizer
+
+- Replaced the old Nexus Chat performance presets with the Nexus 75 optimization engine.
+- Integrated every optimizer control into the existing themed Performance settings page.
+- Added Quality, Balanced, Performance, Competitive, Extreme, Original, and Custom modes.
+- Added light textures, 1x HiDPI rendering, screen-shake control, lobby sleeping, smart region leases, calibration, and extension-only third-party filtering.
+- Added FPS, 1% low, frame p95, long-task, input-to-frame, and passive RTT diagnostics that run only while needed.
+- Disabled client-side interpolation in performance-oriented presets after verifying its per-player, per-frame work in the game client.
+- Kept client-side player rotation enabled in every preset.
+
 ## 3.6.1 - Reliable themed update notices
 
 - Check GitHub's release manifest first and fall back to Render when needed.

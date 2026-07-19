@@ -4,7 +4,7 @@
     window.__nexusChatLoaded = true;
     window.__nexusIntegratedOptimizer = true;
 
-    const EXT_VERSION = '3.6.1';
+    const EXT_VERSION = '3.7.0';
     const WEBSITE_URL = 'https://wnexuschat.netlify.app';
     const GREASYFORK_URL = 'https://greasyfork.org/es/scripts/584741-nexus-chat';
     const bootstrap = window.__NEXUS_BOOTSTRAP__ || {};
@@ -149,63 +149,85 @@
     const AVAILABLE_THEMES = ['dark', 'light', 'midnight', 'ocean', 'ember', 'orchid'];
     if (!AVAILABLE_THEMES.includes(config.theme)) config.theme = DEFAULT_CONFIG.theme;
 
-    const PERFORMANCE_PROFILES = Object.freeze({
-        native: {
-            label: 'Native', game: null, renderedMessages: 100, particles: 80,
-            details: 'Keeps the game and Nexus visual effects unchanged.'
-        },
-        balanced: {
-            label: 'Balanced', renderedMessages: 40, particles: 10,
-            game: { highResTex: false, screenShake: false, interpolation: true, localRotation: true },
-            details: 'Low-resolution textures, no shake, smooth interpolation, client-side rotation, and lighter Nexus effects.'
-        },
-        'low-power': {
-            label: 'Low power', renderedMessages: 20, particles: 0,
-            game: { highResTex: false, screenShake: false, interpolation: false, localRotation: true },
-            details: 'Minimum Nexus effects and message workload while keeping client-side rotation enabled.'
-        }
+    const OPTIMIZER_MODE_LABELS = Object.freeze({
+        quality: 'Quality', balanced: 'Balanced', performance: 'Performance',
+        competitive: 'Competitive', extreme: 'Extreme', original: 'Original', custom: 'Custom'
     });
+    const OPTIMIZER_MODE_DETAILS = Object.freeze({
+        quality: 'Native-resolution visuals and smooth interpolation with only safe lobby cleanup.',
+        balanced: 'Recommended default: lighter textures and 1x rendering without per-player interpolation work.',
+        performance: 'Prioritizes stable FPS and blocks observed third-party traffic in the browser extension.',
+        competitive: 'Performance settings with input consistency, game audio, and diagnostics asleep during matches.',
+        extreme: 'Maximum reduction, including muted game audio and a locked selected region.',
+        original: 'Restores captured game preferences while keeping client-side player rotation enabled.',
+        custom: 'Choose exactly which Nexus 75 optimizations should be enabled.'
+    });
+    const migratedPerformanceMode = ({ native: 'original', 'low-power': 'performance' })[config.performanceMode] || config.performanceMode;
+    const initialOptimizerSettings = window.NexusOptimizer?.getSettings?.();
+    config.performanceMode = initialOptimizerSettings?.preset || (OPTIMIZER_MODE_LABELS[migratedPerformanceMode] ? migratedPerformanceMode : 'balanced');
+    let optimizerDraft = initialOptimizerSettings ? { ...initialOptimizerSettings } : null;
+    let optimizerMetricsStop = null;
+    let optimizerEarlyDiagnostics = null;
 
-    function selectedPerformanceProfile(mode = config.performanceMode) {
-        return PERFORMANCE_PROFILES[mode] || PERFORMANCE_PROFILES.balanced;
+    function optimizerCore() { return window.NexusOptimizer || null; }
+    function optimizerModeLabel(mode = config.performanceMode) { return OPTIMIZER_MODE_LABELS[mode] || OPTIMIZER_MODE_LABELS.balanced; }
+    function currentOptimizerDraft() {
+        const core = optimizerCore();
+        if (!optimizerDraft) optimizerDraft = core?.getSettings?.() || { preset: config.performanceMode };
+        return optimizerDraft;
     }
 
-    function persistGamePerformance(profile) {
-        if (!profile.game) return;
-        const gameConfig = readStoredJson('surviv_config', {});
-        Object.assign(gameConfig, profile.game);
-        localStorage.setItem('surviv_config', JSON.stringify(gameConfig));
+    function updateOptimizerMetricCards(metrics = {}) {
+        const setText = (id, value) => { const element = document.getElementById(id); if (element) element.textContent = value; };
+        setText('cfg-opt-fps', metrics.fps ? String(metrics.fps) : '—');
+        setText('cfg-opt-low', metrics.onePercentLow ? String(Math.round(metrics.onePercentLow)) : '—');
+        setText('cfg-opt-p95', metrics.p95 ? `${metrics.p95} ms` : '—');
+        setText('cfg-opt-tasks', Number.isFinite(metrics.longTasks) ? String(metrics.longTasks) : '—');
+        setText('cfg-opt-input', metrics.inputP95 ? `${metrics.inputP95} ms` : '—');
+        setText('cfg-opt-rtt', metrics.passiveRtt ? `~${metrics.passiveRtt} ms` : '—');
     }
 
-    function applyRuntimePerformance(mode) {
-        const safeMode = PERFORMANCE_PROFILES[mode] ? mode : 'balanced';
-        document.documentElement.dataset.nexusPerformance = safeMode;
+    function startOptimizerMetrics() {
+        const core = optimizerCore();
+        if (!core || (core.isPlaying?.() && currentOptimizerDraft().sleepMonitorInGame)) return;
+        optimizerMetricsStop?.();
+        optimizerMetricsStop = core.startMetrics?.(updateOptimizerMetricCards) || null;
     }
 
-    function pruneRuntimeState(profile) {
-        if (messageHistory.length > 100) messageHistory = messageHistory.slice(-100);
-        if (globalMessageHistory.length > 100) globalMessageHistory = globalMessageHistory.slice(-100);
-        directMessageHistory.forEach((messages, friendId) => {
-            if (messages.length > 100) directMessageHistory.set(friendId, messages.slice(-100));
-        });
-        while (profileCache.size > 250) {
-            const removableId = Array.from(profileCache.keys()).find((id) => id !== socialProfile?.id && !socialFriends.some((friend) => friend.id === id));
-            if (!removableId) break;
-            profileCache.delete(removableId);
-        }
-        if (profile.renderedMessages < 100 && messageArea && !isDim) renderActiveChannel();
+    function stopOptimizerMetrics() {
+        optimizerMetricsStop?.();
+        optimizerMetricsStop = null;
+        optimizerCore()?.stopMetrics?.();
     }
 
     function refreshPerformanceDetails() {
-        const profile = selectedPerformanceProfile();
+        const core = optimizerCore();
+        const draft = currentOptimizerDraft();
+        const mode = draft.preset || config.performanceMode || 'balanced';
         const setText = (id, value) => { const element = document.getElementById(id); if (element) element.textContent = value; };
-        setText('cfg-performance-state', `${profile.label} active`);
-        setText('cfg-performance-summary', profile.details);
-        setText('cfg-performance-textures', profile.game ? (profile.game.highResTex ? 'High' : 'Low') : 'Game setting');
-        setText('cfg-performance-shake', profile.game ? (profile.game.screenShake ? 'On' : 'Off') : 'Game setting');
-        setText('cfg-performance-interpolation', profile.game ? (profile.game.interpolation ? 'On' : 'Off') : 'Game setting');
-        setText('cfg-performance-rotation', profile.game ? (profile.game.localRotation ? 'On' : 'Off') : 'Game setting');
-        setText('cfg-performance-messages', String(profile.renderedMessages));
+        setText('cfg-performance-state', `${optimizerModeLabel(mode)} ready`);
+        setText('cfg-performance-summary', OPTIMIZER_MODE_DETAILS[mode] || OPTIMIZER_MODE_DETAILS.custom);
+        setText('cfg-performance-textures', draft.enabled ? (draft.lowResTextures ? 'Light' : 'High') : 'Original');
+        setText('cfg-performance-resolution', draft.enabled && draft.renderAt1x ? '1x' : 'Native');
+        setText('cfg-performance-shake', draft.enabled && draft.disableScreenShake ? 'Off' : 'Original');
+        setText('cfg-performance-interpolation', draft.enabled ? (draft.keepInterpolation ? 'On' : 'Off') : 'Original');
+        setText('cfg-performance-audio', draft.enabled && draft.muteAudio ? 'Muted' : 'On');
+        setText('cfg-performance-rotation', 'Always on');
+        setText('cfg-performance-network', draft.enabled && draft.blockThirdParty ? (core?.isNetworkBlockingSupported?.() ? 'Filtered' : 'Extension only') : 'Normal');
+        setText('cfg-performance-region', draft.lockSelectedRegion ? 'Locked' : (draft.smartRegion ? 'Smart 72 h' : 'Automatic'));
+        const select = document.getElementById('cfg-performance');
+        if (select) select.value = mode;
+        const custom = document.getElementById('cfg-performance-custom');
+        if (custom) custom.hidden = mode !== 'custom';
+        document.querySelectorAll('[data-optimizer-setting]').forEach((input) => {
+            input.checked = Boolean(draft[input.dataset.optimizerSetting]);
+            if (input.dataset.optimizerSetting === 'blockThirdParty') input.disabled = !core?.isNetworkBlockingSupported?.();
+        });
+        const report = core?.getAutoTuneReport?.();
+        const reportElement = document.getElementById('cfg-performance-calibration');
+        if (reportElement) reportElement.textContent = report
+            ? `Last calibration: ${report.recommended} · ${report.fps || '—'} FPS · p95 ${report.p95 || '—'} ms`
+            : 'No calibration saved yet.';
     }
 
     function showOptimizationProgress(profile, tasks) {
@@ -215,9 +237,9 @@
         overlay.id = 'nx-optimization-loader';
         overlay.innerHTML = `<div class="nx-opt-loader-card"><span class="nx-opt-loader-mark">N</span><strong>Applying ${profile.label}</strong><p id="nx-opt-loader-status">Preparing optimizer…</p><div class="nx-opt-loader-track"><i></i></div><small id="nx-opt-loader-count">0 / ${tasks.length}</small></div>`;
         document.documentElement.appendChild(overlay);
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
             let index = 0;
-            const advance = () => {
+            const advance = async () => {
                 const task = tasks[index];
                 if (!task) {
                     overlay.classList.add('done');
@@ -227,10 +249,12 @@
                 const status = document.getElementById('nx-opt-loader-status');
                 if (status) status.textContent = task.label;
                 try {
-                    task.run();
+                    await task.run();
                 } catch (error) {
-                    console.warn(`[NexusChat] Optimizer task failed: ${task.label}`, error);
-                    if (status) status.textContent = `${task.label} skipped safely`;
+                    console.error(`[NexusChat] Optimizer task failed: ${task.label}`, error);
+                    if (status) status.textContent = `${task.label} failed`;
+                    setTimeout(() => { overlay.remove(); reject(error); }, 220);
+                    return;
                 }
                 index += 1;
                 overlay.style.setProperty('--nx-opt-progress', `${Math.round((index / tasks.length) * 100)}%`);
@@ -243,24 +267,27 @@
     }
 
     function applyPerformanceMode(mode, { showProgress = false } = {}) {
-        const safeMode = PERFORMANCE_PROFILES[mode] ? mode : 'balanced';
-        const profile = PERFORMANCE_PROFILES[safeMode];
+        const core = optimizerCore();
+        if (!core) return Promise.reject(new Error('The Nexus optimizer core is unavailable.'));
+        const safeMode = OPTIMIZER_MODE_LABELS[mode] ? mode : 'balanced';
         config.performanceMode = safeMode;
+        optimizerDraft = safeMode === 'custom'
+            ? { ...currentOptimizerDraft(), preset: 'custom' }
+            : core.settingsForPreset(safeMode, currentOptimizerDraft());
+        let result = null;
         const tasks = [
-            { label: 'Saving verified game settings', run: () => persistGamePerformance(profile) },
-            { label: 'Reducing Nexus rendering effects', run: () => applyRuntimePerformance(safeMode) },
-            { label: 'Trimming inactive chat work', run: () => pruneRuntimeState(profile) },
-            { label: 'Refreshing optimizer diagnostics', run: () => {
-                localStorage.setItem('nexus_optimizer_mode', safeMode);
-                window.dispatchEvent(new CustomEvent('NEXUS_PERFORMANCE_APPLIED', { detail: { mode: safeMode } }));
-                refreshPerformanceDetails();
-            } }
+            { label: 'Saving Nexus 75 profile', run: async () => { result = await core.apply(optimizerDraft); } },
+            { label: 'Synchronizing game startup settings', run: () => localStorage.setItem('nexus_optimizer_mode', safeMode) },
+            { label: 'Preparing graphics and region controls', run: () => refreshPerformanceDetails() },
+            { label: 'Finishing safe reload', run: () => window.dispatchEvent(new CustomEvent('NEXUS_PERFORMANCE_APPLIED', { detail: { mode: safeMode } })) }
         ];
         if (!showProgress || !document.body) {
-            tasks.forEach((task) => task.run());
-            return Promise.resolve();
+            return tasks.reduce((promise, task) => promise.then(task.run), Promise.resolve()).then(() => result);
         }
-        return showOptimizationProgress(profile, tasks);
+        return showOptimizationProgress({ label: optimizerModeLabel(safeMode) }, tasks).then(() => {
+            setTimeout(() => location.reload(), 220);
+            return result;
+        });
     }
 
     let username     = sessionStorage.getItem('nexus_username') || '';
@@ -340,7 +367,11 @@
     let killLeaderSearchTimer = null;
     let killLeaderSearchAttempts = 0;
 
-    applyPerformanceMode(config.performanceMode);
+    window.addEventListener('message', (event) => {
+        if (event.source !== window || event.origin !== location.origin || event.data?.source !== 'nxo:early') return;
+        optimizerEarlyDiagnostics = event.data;
+        refreshPerformanceDetails();
+    });
 
     function unlockAudio() {
         audioUnlocked = true;
@@ -905,6 +936,7 @@
         }
         killLeaderSearchAttempts = 0;
         if (killLeaderObserver) killLeaderObserver.disconnect();
+        stopOptimizerMetrics();
         killLeaderObserver = new MutationObserver(refreshKillLeaderFromGame);
         killLeaderObserver.observe(nameElement, { childList: true, characterData: true, subtree: true });
         killLeaderObserver.observe(countElement, { childList: true, characterData: true, subtree: true });
@@ -1438,7 +1470,7 @@
         if (!messageArea) return;
         batchRenderDepth += 1;
         messageArea.innerHTML = '';
-        const renderLimit = selectedPerformanceProfile().renderedMessages;
+        const renderLimit = 100;
         const title = document.getElementById('nx-channel-title');
         const subtitle = document.getElementById('nx-channel-subtitle');
         if (activeChannel === 'game') {
@@ -1601,7 +1633,7 @@
         if (scrollAnimationId) cancelAnimationFrame(scrollAnimationId);
         userScrolled = false;
         updateScrollButton();
-        if (config.performanceMode !== 'native' || isDim || document.hidden) smooth = false;
+        if (isDim || document.hidden) smooth = false;
         if (!smooth) {
             messageArea.scrollTop = messageArea.scrollHeight;
             requestAnimationFrame(() => {
@@ -1640,7 +1672,8 @@
         if (isDim) { isDim = false; applyDim(false); }
         refreshSettingsIdentity();
         refreshSettingsDiagnostics();
-        if (pageName === 'performance') refreshPerformanceDetails();
+        if (pageName === 'performance') { refreshPerformanceDetails(); startOptimizerMetrics(); }
+        else stopOptimizerMetrics();
         playSound('panel');
     }
 
@@ -1830,12 +1863,6 @@
             html.nx-chat-dimmed #nx-chat,
             html.nx-chat-dimmed #nx-toggle,
             html.nx-chat-dimmed #nx-profile-popover { opacity:0 !important; visibility:hidden !important; pointer-events:none !important; }
-            html[data-nexus-performance="balanced"] #nx-chat,
-            html[data-nexus-performance="low-power"] #nx-chat { backdrop-filter:none; -webkit-backdrop-filter:none; box-shadow:0 14px 42px rgba(0,0,0,.46); }
-            html[data-nexus-performance="low-power"] #nx-chat { box-shadow:0 8px 24px rgba(0,0,0,.38); }
-            html[data-nexus-performance="low-power"] #nx-chat *,
-            html[data-nexus-performance="low-power"] #nx-toggle { animation:none !important; transition-duration:.01ms !important; }
-            html[data-nexus-performance="low-power"] .fire-gif { display:none !important; }
             #nx-optimization-loader { --nx-opt-progress:0%; position:fixed; inset:0; z-index:2147483647; display:grid; place-items:center; background:rgba(8,11,7,.96); color:#f4eedb; font-family:Inter,Segoe UI,system-ui,sans-serif; opacity:1; transition:opacity .28s ease; }
             #nx-optimization-loader.done { opacity:0; pointer-events:none; }
             .nx-opt-loader-card { width:min(360px,calc(100vw - 42px)); padding:24px; border:1px solid rgba(242,201,76,.22); border-radius:18px; background:#141911; box-shadow:0 24px 70px rgba(0,0,0,.6); text-align:center; }
@@ -1977,7 +2004,6 @@
             .kill-leader-text strong { max-width:230px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
             .kill-leader-text em { color:#ffe8a3; font-size:9px; font-style:normal; }
             .kill-leader-msg { border-color:rgba(255,214,90,.7) !important; background:linear-gradient(90deg,rgba(255,196,54,.12),transparent) !important; box-shadow:inset 3px 0 #ffd65a !important; }
-            html[data-nexus-performance="low-power"] .kill-leader { background-image:linear-gradient(90deg,#211704,#453006) !important; box-shadow:none; }
             .kills-badge {
                 display: inline-block;
                 background: rgba(0,0,0,0.4);
@@ -2065,6 +2091,16 @@
             .nx-recovery-row input { margin-top:0 !important; }
             .nx-settings-toggle { display:flex !important; align-items:center; justify-content:space-between; padding:8px 0; color:var(--nx-text) !important; }
             .nx-settings-toggle input { width:16px !important; height:16px; margin:0 !important; accent-color:var(--nx-accent); }
+            .nx-optimizer-metrics { margin:10px 0; grid-template-columns:repeat(4,1fr); }
+            .nx-optimizer-options { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin-top:9px; }
+            .nx-optimizer-option { display:grid !important; grid-template-columns:1fr auto; gap:3px 8px; align-items:center; padding:9px; border:1px solid var(--nx-glass-border); border-radius:10px; background:rgba(255,255,255,.025); color:var(--nx-text) !important; }
+            .nx-optimizer-option span { font-size:10px; font-weight:750; }
+            .nx-optimizer-option small { grid-column:1; color:var(--nx-text-secondary); font-size:8px; line-height:1.35; }
+            .nx-optimizer-option input { grid-column:2; grid-row:1 / span 2; width:16px !important; height:16px; margin:0 !important; accent-color:var(--nx-accent); }
+            .nx-optimizer-option:has(input:disabled) { opacity:.5; }
+            .nx-optimizer-actions { display:flex; gap:8px; align-items:center; margin-top:10px; }
+            .nx-optimizer-actions .nx-settings-note { margin-right:auto; }
+            @media (max-width:700px) { .nx-optimizer-options { grid-template-columns:1fr; } .nx-optimizer-metrics { grid-template-columns:repeat(2,1fr); } }
             .nx-theme-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
             .nx-theme-card { position:relative; display:grid !important; grid-template-columns:46px 1fr; align-items:center; gap:9px; padding:9px !important; color:var(--nx-text) !important; background:rgba(255,255,255,.03) !important; border:1px solid var(--nx-glass-border) !important; text-align:left; }
             .nx-theme-card.active { border-color:var(--nx-accent) !important; box-shadow:0 0 0 2px color-mix(in srgb,var(--nx-accent) 11%,transparent); }
@@ -2156,7 +2192,7 @@
             event.preventDefault();
             event.stopPropagation();
             userScrolled = false;
-            scrollToBottom(config.performanceMode === 'native');
+            scrollToBottom(true);
         });
 
         document.getElementById('nx-dnd-btn').addEventListener('click', toggleDnd);
@@ -2167,7 +2203,7 @@
         document.getElementById('nx-cfg-btn').addEventListener('click', () => {
             const opening = settingsPanel.style.display !== 'block';
             if (opening) showSettingsPage('account');
-            else { settingsPanel.style.display = 'none'; startIdleTimer(); playSound('close'); }
+            else { settingsPanel.style.display = 'none'; stopOptimizerMetrics(); startIdleTimer(); playSound('close'); }
         });
         document.querySelectorAll('.nx-channel').forEach((button) => button.addEventListener('click', () => setActiveChannel(button.dataset.channel)));
         document.getElementById('nx-add-friend-toggle').addEventListener('click', () => {
@@ -2580,12 +2616,14 @@
                     <section class="nx-settings-page active" data-page="account"><h3 class="nx-settings-page-title">Your Nexus account</h3><p class="nx-settings-page-copy">Your Nexus ID comes from a private recovery key and stays the same when your game name changes.</p><div class="nx-settings-section"><h4>Identity</h4><div class="nx-account-card"><div><div id="cfg-nexus-id" class="nx-account-id">Connecting…</div><div class="nx-account-hint">Share only this public ID when adding friends.</div></div><button id="cfg-copy-id" class="nx-secondary-btn">Copy ID</button></div></div><div class="nx-settings-section"><h4>Public profile</h4><label>Avatar image URL<input id="cfg-avatar-url" type="url" maxlength="500" placeholder="https://example.com/avatar.png" value="${safeAvatar}"></label><label>Bio<textarea id="cfg-bio" maxlength="160" placeholder="Tell other survivors about yourself">${safeBio}</textarea></label><button id="cfg-save-profile">Save profile</button></div><div class="nx-settings-section"><h4>Recovery</h4><div class="nx-recovery-row"><input id="cfg-recovery-key" type="password" placeholder="Paste an NXR recovery key"><button id="cfg-import-key">Restore</button><button id="cfg-copy-key" class="nx-secondary-btn">Copy key</button></div><small>Keep this key private. It restores the exact same account in another browser or game domain.</small></div></section>
                     <section class="nx-settings-page" data-page="appearance"><h3 class="nx-settings-page-title">Appearance</h3><p class="nx-settings-page-copy">Each theme uses a deliberate color harmony with readable contrast.</p><div class="nx-theme-grid"><button class="nx-theme-card ${config.theme==='dark'?'active':''}" data-theme="dark" style="--swatch-a:#1c2518;--swatch-b:#f2c94c"><span class="nx-theme-swatch"></span><span><strong>Survival</strong><small>Olive + amber</small></span></button><button class="nx-theme-card ${config.theme==='light'?'active':''}" data-theme="light" style="--swatch-a:#f3eedb;--swatch-b:#657747"><span class="nx-theme-swatch"></span><span><strong>Daylight</strong><small>Cream + forest</small></span></button><button class="nx-theme-card ${config.theme==='midnight'?'active':''}" data-theme="midnight" style="--swatch-a:#0a0c28;--swatch-b:#a88cff"><span class="nx-theme-swatch"></span><span><strong>Midnight</strong><small>Violet + cyan</small></span></button><button class="nx-theme-card ${config.theme==='ocean'?'active':''}" data-theme="ocean" style="--swatch-a:#04283a;--swatch-b:#35dcc8"><span class="nx-theme-swatch"></span><span><strong>Ocean</strong><small>Turquoise + coral</small></span></button><button class="nx-theme-card ${config.theme==='ember'?'active':''}" data-theme="ember" style="--swatch-a:#35140d;--swatch-b:#ff9a44"><span class="nx-theme-swatch"></span><span><strong>Ember</strong><small>Orange + teal</small></span></button><button class="nx-theme-card ${config.theme==='orchid'?'active':''}" data-theme="orchid" style="--swatch-a:#32103a;--swatch-b:#ea7dff"><span class="nx-theme-swatch"></span><span><strong>Orchid</strong><small>Magenta + mint</small></span></button></div><div class="nx-settings-section"><h4>Chat window</h4><div class="nx-settings-grid"><label>Display name<input type="text" id="cfg-name" value="${safeName}" maxlength="15"></label><label>Author color<input type="color" id="cfg-authorcolor" value="${hslToHex(authorColor)}"></label><label>Size<select id="cfg-size"><option value="compact" ${config.size==='compact'?'selected':''}>Compact</option><option value="medium" ${config.size==='medium'?'selected':''}>Medium</option><option value="large" ${config.size==='large'?'selected':''}>Large</option></select></label><label>Position<select id="cfg-pos"><option value="top-left" ${config.position==='top-left'?'selected':''}>Top left</option><option value="top-right" ${config.position==='top-right'?'selected':''}>Top right</option><option value="bottom-left" ${config.position==='bottom-left'?'selected':''}>Bottom left</option><option value="bottom-right" ${config.position==='bottom-right'?'selected':''}>Bottom right</option></select></label><label>Volume<input type="range" id="cfg-volume" min="0" max="1" step="0.05" value="${config.volume}"></label></div></div></section>
                     <section class="nx-settings-page" data-page="chat"><h3 class="nx-settings-page-title">Chat</h3><p class="nx-settings-page-copy">Control shortcuts, alerts, and window behavior.</p><div class="nx-settings-section"><h4>Keys and timing</h4><div class="nx-settings-grid"><label>Open chat<button id="cfg-key" class="nx-secondary-btn">${config.activationKeyChar}</button></label><label>Dim chat<button id="cfg-dim-key" class="nx-secondary-btn">${config.dimKeyChar}</button></label><label>Hide after (seconds)<input type="number" id="cfg-idle" value="${config.idleTimeout}" min="1" max="30"></label></div></div><div class="nx-settings-section"><h4>Notifications</h4><label class="nx-settings-toggle">Discord reminders<input type="checkbox" id="cfg-discord-reminder" ${config.discordReminder?'checked':''}></label><label class="nx-settings-toggle">Do not disturb<input type="checkbox" id="cfg-dnd" ${config.dndMode?'checked':''}></label></div></section>
-                    <section class="nx-settings-page" data-page="performance"><h3 class="nx-settings-page-title">Performance optimizer</h3><p class="nx-settings-page-copy">Applies verified Survev and Resurviv settings while reducing Nexus rendering work immediately.</p><div class="nx-settings-section"><div class="nx-account-card"><div><h4 id="cfg-performance-state">Optimizer ready</h4><small id="cfg-performance-summary" class="nx-settings-note">Choose a preset to see its details.</small></div><button id="cfg-apply-performance">Apply now</button></div><label>Preset<select id="cfg-performance"><option value="native" ${config.performanceMode==='native'?'selected':''}>Native</option><option value="balanced" ${config.performanceMode==='balanced'?'selected':''}>Balanced</option><option value="low-power" ${config.performanceMode==='low-power'?'selected':''}>Low power</option></select></label><div class="nx-status-grid" style="margin-top:10px"><div class="nx-status-card"><span>Textures</span><strong id="cfg-performance-textures">—</strong></div><div class="nx-status-card"><span>Screen shake</span><strong id="cfg-performance-shake">—</strong></div><div class="nx-status-card"><span>Interpolation</span><strong id="cfg-performance-interpolation">—</strong></div><div class="nx-status-card"><span>Rendered messages</span><strong id="cfg-performance-messages">—</strong></div></div><small class="nx-settings-note">Nexus effects change live. Verified game preferences are saved immediately and are also used by the next match created by the game.</small></div></section>
+                    <section class="nx-settings-page" data-page="performance"><h3 class="nx-settings-page-title">Nexus 75 performance</h3><p class="nx-settings-page-copy">The optimizer now uses the verified Nexus 75 engine without its separate floating menu. Startup-level changes are applied safely after reload.</p><div class="nx-settings-section"><div class="nx-account-card"><div><h4 id="cfg-performance-state">Optimizer ready</h4><small id="cfg-performance-summary" class="nx-settings-note">Choose a mode or build your own.</small></div><button id="cfg-apply-performance">Apply & reload</button></div><label>Mode<select id="cfg-performance">${Object.entries(OPTIMIZER_MODE_LABELS).map(([value,label]) => `<option value="${value}" ${config.performanceMode===value?'selected':''}>${label}</option>`).join('')}</select></label><div class="nx-status-grid nx-optimizer-metrics"><div class="nx-status-card"><span>FPS</span><strong id="cfg-opt-fps">—</strong></div><div class="nx-status-card"><span>1% low</span><strong id="cfg-opt-low">—</strong></div><div class="nx-status-card"><span>Frame p95</span><strong id="cfg-opt-p95">—</strong></div><div class="nx-status-card"><span>Long tasks</span><strong id="cfg-opt-tasks">—</strong></div></div><div class="nx-status-grid"><div class="nx-status-card"><span>Textures</span><strong id="cfg-performance-textures">—</strong></div><div class="nx-status-card"><span>Resolution</span><strong id="cfg-performance-resolution">—</strong></div><div class="nx-status-card"><span>Screen shake</span><strong id="cfg-performance-shake">—</strong></div><div class="nx-status-card"><span>Interpolation</span><strong id="cfg-performance-interpolation">—</strong></div><div class="nx-status-card"><span>Game audio</span><strong id="cfg-performance-audio">—</strong></div><div class="nx-status-card"><span>Client rotation</span><strong id="cfg-performance-rotation">Always on</strong></div><div class="nx-status-card"><span>Region</span><strong id="cfg-performance-region">—</strong></div><div class="nx-status-card"><span>Third parties</span><strong id="cfg-performance-network">—</strong></div></div><div id="cfg-performance-custom" ${config.performanceMode==='custom'?'':'hidden'}><h4 style="margin-top:14px">Custom controls</h4><div class="nx-optimizer-options">${(window.NexusOptimizer?.options || []).map((option) => `<label class="nx-optimizer-option"><span>${escapeHtml(option.title)}</span><small>${escapeHtml(option.description)}</small><input type="checkbox" data-optimizer-setting="${escapeHtml(option.key)}"></label>`).join('')}</div></div><div class="nx-optimizer-actions"><small id="cfg-performance-calibration" class="nx-settings-note">No calibration saved yet.</small><button id="cfg-calibrate-performance" class="nx-secondary-btn">Calibrate</button></div><small class="nx-settings-note">Client-side interpolation is disabled in Balanced, Performance, Competitive, and Extreme because the game performs position and direction interpolation for visible players every frame. Quality and Custom can keep it enabled.</small></div></section>
                     <section class="nx-settings-page" data-page="diagnostics"><h3 class="nx-settings-page-title">Diagnostics</h3><p class="nx-settings-page-copy">Check whether Nexus ID and Global chat are ready.</p><div class="nx-status-grid"><div class="nx-status-card"><span>Server</span><strong id="cfg-status-server">Checking…</strong></div><div class="nx-status-card"><span>Nexus ID</span><strong id="cfg-status-id">Checking…</strong></div><div class="nx-status-card"><span>Client</span><strong>v${EXT_VERSION}</strong></div></div><div class="nx-settings-section"><h4>Connection</h4><div id="cfg-status-detail" class="nx-settings-note">Waiting for socket information…</div><button id="cfg-reconnect" style="margin-top:10px">Reconnect now</button></div></section>
                 </div>
             </div>
         `;
 
+        const optimizerMetricsGrid = settingsPanel.querySelector('.nx-optimizer-metrics');
+        optimizerMetricsGrid?.insertAdjacentHTML('beforeend', '<div class="nx-status-card"><span>Input→frame p95</span><strong id="cfg-opt-input">—</strong></div><div class="nx-status-card"><span>Estimated RTT</span><strong id="cfg-opt-rtt">—</strong></div>');
         const displayNameInput = document.getElementById('cfg-name');
         const displayNameLabel = displayNameInput?.closest('label');
         if (displayNameLabel) {
@@ -2596,15 +2634,13 @@
             profileBioInput.maxLength = 2000;
             profileBioInput.insertAdjacentHTML('afterend', `<small id="cfg-bio-count" class="nx-settings-note">${safeBioWords} / 250 words</small>`);
         }
-        const renderedMessagesCard = document.getElementById('cfg-performance-messages')?.closest('.nx-status-card');
-        if (renderedMessagesCard) renderedMessagesCard.insertAdjacentHTML('beforebegin', '<div class="nx-status-card"><span>Client rotation</span><strong id="cfg-performance-rotation">—</strong></div>');
-
-        document.getElementById('nx-settings-close').addEventListener('click', () => { settingsPanel.style.display = 'none'; playSound('close'); });
+        document.getElementById('nx-settings-close').addEventListener('click', () => { settingsPanel.style.display = 'none'; stopOptimizerMetrics(); playSound('close'); });
         document.querySelectorAll('.nx-settings-nav button').forEach((button) => button.addEventListener('click', () => {
             document.querySelectorAll('.nx-settings-nav button').forEach((item) => item.classList.toggle('active', item === button));
             document.querySelectorAll('.nx-settings-page').forEach((page) => page.classList.toggle('active', page.dataset.page === button.dataset.settingsPage));
             if (button.dataset.settingsPage === 'diagnostics') refreshSettingsDiagnostics();
-            if (button.dataset.settingsPage === 'performance') refreshPerformanceDetails();
+            if (button.dataset.settingsPage === 'performance') { refreshPerformanceDetails(); startOptimizerMetrics(); }
+            else stopOptimizerMetrics();
             playSound('navigate');
         }));
         document.getElementById('cfg-copy-id').addEventListener('click', async function() {
@@ -2665,6 +2701,22 @@
             document.querySelectorAll('.nx-theme-card').forEach((item) => item.classList.toggle('active', item === button));
             playSound('toggle');
         }));
+        const performanceSelect = document.getElementById('cfg-performance');
+        performanceSelect.addEventListener('change', function() {
+            const core = optimizerCore();
+            config.performanceMode = this.value;
+            optimizerDraft = this.value === 'custom'
+                ? { ...currentOptimizerDraft(), preset: 'custom' }
+                : core?.settingsForPreset?.(this.value, currentOptimizerDraft());
+            refreshPerformanceDetails();
+            playSound('toggle');
+        });
+        document.querySelectorAll('[data-optimizer-setting]').forEach((input) => input.addEventListener('change', function() {
+            optimizerDraft = { ...currentOptimizerDraft(), preset: 'custom', [this.dataset.optimizerSetting]: this.checked };
+            config.performanceMode = 'custom';
+            performanceSelect.value = 'custom';
+            refreshPerformanceDetails();
+        }));
         const applySelectedPerformance = async () => {
             const select = document.getElementById('cfg-performance');
             const button = document.getElementById('cfg-apply-performance');
@@ -2675,14 +2727,38 @@
             try {
                 await applyPerformanceMode(config.performanceMode, { showProgress: true });
                 playSound('success');
-                addChannelNotice(`${selectedPerformanceProfile().label} optimization applied without reloading.`);
-            } finally {
+            } catch (error) {
+                showError(`Optimizer could not be applied: ${error.message}`);
                 select.disabled = false;
                 button.disabled = false;
+            } finally {
+                if (!document.getElementById('nx-optimization-loader')) {
+                    select.disabled = false;
+                    button.disabled = false;
+                }
             }
         };
-        document.getElementById('cfg-performance').addEventListener('change', applySelectedPerformance);
         document.getElementById('cfg-apply-performance').addEventListener('click', applySelectedPerformance);
+        document.getElementById('cfg-calibrate-performance').addEventListener('click', async function() {
+            const core = optimizerCore();
+            if (!core) return;
+            this.disabled = true;
+            const originalText = this.textContent;
+            this.textContent = 'Measuring 4 s…';
+            try {
+                const result = await core.calibrate();
+                if (!result.ok) { showError(result.error); return; }
+                optimizerDraft = result.settings;
+                config.performanceMode = optimizerDraft.preset;
+                saveConfig();
+                refreshPerformanceDetails();
+                updateOptimizerMetricCards(result.report);
+                playSound('success');
+            } finally {
+                this.disabled = false;
+                this.textContent = originalText;
+            }
+        });
         document.getElementById('cfg-reconnect').addEventListener('click', function() {
             lastConnectionError = '';
             if (chatSocket) chatSocket.disconnect();
@@ -2735,7 +2811,7 @@
 
     function startDiscordReminder() {
         stopDiscordReminder();
-        if (!config.discordReminder || config.performanceMode !== 'native') return;
+        if (!config.discordReminder) return;
         discordReminderInterval = setInterval(() => {
             if (chatSocket && chatSocket.connected && gameId) {
                 const div = document.createElement('div'); div.className = 'system-msg discord-reminder';
@@ -2828,7 +2904,7 @@
         const ctx = canvas.getContext('2d');
         canvas.width = window.innerWidth; canvas.height = window.innerHeight;
         const particles = [];
-        const particleCount = selectedPerformanceProfile().particles;
+        const particleCount = 80;
         for (let i = 0; i < particleCount; i++) particles.push({ x:Math.random()*canvas.width, y:Math.random()*canvas.height, radius:Math.random()*2+1, speedX:Math.random()*0.6-0.3, speedY:Math.random()*0.6-0.3, alpha:Math.random()*0.45+0.2 });
         let lastParticleFrame = 0;
         function animateParticles(now = 0) {

@@ -2,7 +2,7 @@
 // @name         Nexus Chat
 // @namespace    https://nexus-chat-free.onrender.com/
 // @icon         https://i.ibb.co/FkXVWJnC/Chat-GPT-Image-26-jun-2026-19-06-21.png
-// @version      3.6.1
+// @version      3.7.0
 // @description  Nexus chat, social features and live performance optimizer for Resurviv and Survev.
 // @author       ! System
 // @license      MIT
@@ -25,7 +25,7 @@
     window.__nexusTampermonkeyLoader = true;
 
     const SERVER = 'https://nexus-chat-free.onrender.com';
-    const LOADER_VERSION = '3.6.1';
+    const LOADER_VERSION = '3.7.0';
     const TOKEN_KEY = 'nexus_social_token';
 
     function requestText(url) {
@@ -62,12 +62,14 @@
 
     try {
         const savedToken = await GM.getValue(TOKEN_KEY, '');
-        const [socketIoCode, clientCode] = await Promise.all([
+        const [optimizerEarlyCode, optimizerCoreCode, socketIoCode, clientCode] = await Promise.all([
+            requestText(`${SERVER}/optimizer-early.js?v=${LOADER_VERSION}`),
+            requestText(`${SERVER}/optimizer-core.js?v=${LOADER_VERSION}`),
             requestText(`${SERVER}/socket.io/socket.io.js?v=4.7.2`),
             requestText(`${SERVER}/client.js?v=${LOADER_VERSION}`)
         ]);
         const script = document.createElement('script');
-        script.textContent = `window.__NEXUS_BOOTSTRAP__=${JSON.stringify({ socialToken: savedToken, serverUrl: SERVER, clientType: 'userscript', installedVersion: LOADER_VERSION })};\n${socketIoCode}\n${clientCode}`;
+        script.textContent = `window.__NEXUS_BOOTSTRAP__=${JSON.stringify({ socialToken: savedToken, serverUrl: SERVER, clientType: 'userscript', installedVersion: LOADER_VERSION })};\n${optimizerEarlyCode}\n${optimizerCoreCode}\n${socketIoCode}\n${clientCode}`;
         (document.head || document.documentElement).appendChild(script);
         script.remove();
     } catch (error) {
