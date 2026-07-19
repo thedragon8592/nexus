@@ -4,7 +4,7 @@ Nexus Chat is a real-time social overlay and live performance toolkit for Survev
 
 ## Public release
 
-Current version: **3.6.1**
+Current version: **3.7.0**
 
 - Match and Global chat with the same command set
 - Friends, profiles, persistent Nexus IDs, and saved direct messages

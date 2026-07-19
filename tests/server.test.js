@@ -175,7 +175,7 @@ test('social accounts support global chat, friend requests and direct messages',
   const bobJoin = await join(bob, 'social-game', 'Bob');
 
   assert.equal(aliceJoin.socialSession.protocolVersion, 3);
-  assert.equal(aliceJoin.socialSession.serverVersion, '3.6.1');
+  assert.equal(aliceJoin.socialSession.serverVersion, '3.7.0');
   assert.match(aliceJoin.socialSession.profile.friendCode, /^NX-[0-9A-F]{8}$/);
   assert.ok(aliceJoin.socialSession.token);
 
@@ -377,9 +377,9 @@ test('versioned public assets are served without stale caching', async (t) => {
   assert.equal(healthResponse.headers.get('x-frame-options'), 'DENY');
   assert.match(healthResponse.headers.get('permissions-policy'), /camera=\(\)/);
   const health = await healthResponse.json();
-  assert.equal(health.version, '3.6.1');
+  assert.equal(health.version, '3.7.0');
 
-  for (const path of ['/client.js', '/nexus-chat.user.js', '/nexus-optimizer.user.js']) {
+  for (const path of ['/client.js', '/optimizer-early.js', '/optimizer-core.js', '/nexus-chat.user.js', '/nexus-optimizer.user.js']) {
     const response = await fetch(`${url}${path}`);
     assert.equal(response.status, 200);
     assert.match(response.headers.get('cache-control'), /no-store/);
@@ -387,7 +387,7 @@ test('versioned public assets are served without stale caching', async (t) => {
   }
 
   const client = await fetch(`${url}/client.js`).then((response) => response.text());
-  assert.match(client, /const EXT_VERSION = '3\.6\.1'/);
+  assert.match(client, /const EXT_VERSION = '3\.7\.0'/);
   assert.match(client, /raw\.githubusercontent\.com\/thedragon8592\/nexus\/main\/public\/version\.json/);
   assert.match(client, /setInterval\(checkForUpdate, UPDATE_CHECK_INTERVAL_MS\)/);
   assert.match(client, /nx-update-ready/);
@@ -406,7 +406,7 @@ test('versioned public assets are served without stale caching', async (t) => {
   assert.match(client, /Change your name in the game/);
   assert.match(client, /incomingVersion < currentVersion/);
   assert.doesNotMatch(client, /emit\('change-username'/);
-  assert.match(client, /__nexusIntegratedOptimizer/);
+  assert.match(client, /window\.NexusOptimizer/);
   assert.match(client, /showOptimizationProgress/);
   assert.match(client, /nx-chat-dimmed/);
   assert.match(client, /sharedAudioContext/);
@@ -419,7 +419,11 @@ test('versioned public assets are served without stale caching', async (t) => {
   assert.match(client, /FIRE_GIF_URL/);
   assert.match(client, /cancel-friend-request/);
   assert.match(client, /250 words/);
-  assert.match(client, /localRotation: true/);
+  assert.match(client, /OPTIMIZER_MODE_LABELS/);
+  assert.match(client, /data-optimizer-setting/);
+  assert.match(client, /Input→frame p95/);
+  assert.doesNotMatch(client, /PERFORMANCE_PROFILES/);
+  assert.doesNotMatch(client, /data-nexus-performance/);
   assert.doesNotMatch(client, /observer\.observe\(document\.body/);
   assert.doesNotMatch(client, /waitForKillLeaderElements/);
   assert.doesNotMatch(client, /getEntriesByType\('resource'\)/);
@@ -441,27 +445,59 @@ test('versioned public assets are served without stale caching', async (t) => {
   assert.doesNotMatch(client, /Configuración de Nexus/);
 
   const userscript = await fetch(`${url}/nexus-chat.user.js`).then((response) => response.text());
-  assert.match(userscript, /@version\s+3\.6\.1/);
+  assert.match(userscript, /@version\s+3\.7\.0/);
   assert.match(userscript, /clientType: 'userscript'/);
   assert.match(userscript, /installedVersion: LOADER_VERSION/);
   assert.match(userscript, /live performance optimizer/);
   assert.match(userscript, /nexus-chat-free\.onrender\.com/);
   assert.match(userscript, /nx-bootstrap-loader/);
+  assert.match(userscript, /optimizer-early\.js/);
+  assert.match(userscript, /optimizer-core\.js/);
   assert.doesNotMatch(userscript, /overlay\.id = 'nx-game-loader'/);
+
+  const optimizerCore = await fetch(`${url}/optimizer-core.js`).then((response) => response.text());
+  const optimizerEarly = await fetch(`${url}/optimizer-early.js`).then((response) => response.text());
+  const compatibilityLoader = await fetch(`${url}/nexus-optimizer.user.js`).then((response) => response.text());
+  assert.match(optimizerCore, /window\.NexusOptimizer/);
+  assert.match(optimizerCore, /keepInterpolation: false/);
+  assert.match(optimizerCore, /localRotation = true/);
+  assert.match(optimizerCore, /inputP95/);
+  assert.doesNotMatch(optimizerCore, /attachShadow|nxo-extension-root|createPanel/);
+  assert.match(optimizerEarly, /gameConfig\.localRotation = true/);
+  assert.match(compatibilityLoader, /Nexus Optimizer Compatibility Loader/);
+  assert.doesNotMatch(compatibilityLoader, /createPanel|nxo-launcher/);
+
+  const preview = await fetch(`${url}/preview?gameId=optimizer-preview`).then((response) => response.text());
+  assert.match(preview, /src="\/optimizer-early\.js"/);
+  assert.match(preview, /src="\/optimizer-core\.js"/);
 });
 
 test('the packaged browser extension is synchronized with the web client', () => {
   const projectRoot = path.resolve(__dirname, '..');
   const client = fs.readFileSync(path.join(projectRoot, 'public', 'client.js'), 'utf8');
   const extensionClient = fs.readFileSync(path.join(projectRoot, 'extension', 'nexus-chat.js'), 'utf8');
+  const optimizerCore = fs.readFileSync(path.join(projectRoot, 'public', 'optimizer-core.js'), 'utf8');
+  const extensionOptimizerCore = fs.readFileSync(path.join(projectRoot, 'extension', 'optimizer-core.js'), 'utf8');
+  const optimizerEarly = fs.readFileSync(path.join(projectRoot, 'public', 'optimizer-early.js'), 'utf8');
+  const extensionOptimizerEarly = fs.readFileSync(path.join(projectRoot, 'extension', 'optimizer-early.js'), 'utf8');
   const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, 'extension', 'manifest.json'), 'utf8'));
   assert.equal(extensionClient, client);
-  assert.equal(manifest.version, '3.6.1');
+  assert.equal(extensionOptimizerCore, optimizerCore);
+  assert.equal(extensionOptimizerEarly, optimizerEarly);
+  assert.equal(manifest.version, '3.7.0');
   assert.deepEqual(manifest.host_permissions, [
     'https://nexus-chat-free.onrender.com/*',
     'https://raw.githubusercontent.com/thedragon8592/nexus/*',
   ]);
+  assert.deepEqual(manifest.permissions, ['declarativeNetRequest']);
+  assert.equal(manifest.background.service_worker, 'background.js');
+  assert.equal(manifest.content_scripts[0].world, 'MAIN');
+  assert.deepEqual(manifest.content_scripts[0].js, ['optimizer-early.js']);
+  assert.deepEqual(manifest.content_scripts[1].js, ['optimizer-core.js', 'socket.io.min.js', 'nexus-chat.js']);
   assert.equal(manifest.content_scripts[0].all_frames, false);
   assert.ok(fs.existsSync(path.join(projectRoot, 'extension', 'interceptor.js')));
   assert.ok(fs.existsSync(path.join(projectRoot, 'extension', 'socket.io.min.js')));
+  assert.ok(fs.existsSync(path.join(projectRoot, 'extension', 'background.js')));
+  assert.ok(fs.existsSync(path.join(projectRoot, 'extension', 'rules', 'lean-resurviv.json')));
+  assert.ok(fs.existsSync(path.join(projectRoot, 'extension', 'rules', 'lean-survev.json')));
 });

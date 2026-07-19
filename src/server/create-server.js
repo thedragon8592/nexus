@@ -172,6 +172,8 @@ function createNexusServer(options = {}) {
     res.sendFile(path.join(__dirname, '../../public', fileName));
   }
   app.get('/client.js', (req, res) => sendPublicFile(res, 'client.js', 'application/javascript'));
+  app.get('/optimizer-early.js', (req, res) => sendPublicFile(res, 'optimizer-early.js', 'application/javascript'));
+  app.get('/optimizer-core.js', (req, res) => sendPublicFile(res, 'optimizer-core.js', 'application/javascript'));
   app.get('/nexus-chat.user.js', (req, res) => sendPublicFile(res, 'nexus-chat.user.js', 'application/javascript'));
   app.get('/nexus-optimizer.user.js', (req, res) => sendPublicFile(res, 'nexus-optimizer.user.js', 'application/javascript'));
   app.get('/version.json', (req, res) => sendPublicFile(res, 'version.json', 'application/json'));
@@ -179,7 +181,7 @@ function createNexusServer(options = {}) {
     app.get('/preview', (req, res) => {
       const requestedName = typeof req.query.username === 'string' ? req.query.username.trim() : '';
       const previewUsername = /^[A-Za-z0-9_.-]{1,15}$/.test(requestedName) ? requestedName : 'PreviewUser';
-      res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Nexus Chat Preview</title><style>html,body{height:100%;margin:0;background:radial-gradient(circle at 50% 20%,#25331f,#090d08 70%);overflow:hidden}</style></head><body><script>sessionStorage.setItem('nexus_username',${JSON.stringify(previewUsername)});window.__NEXUS_BOOTSTRAP__={serverUrl:location.origin};</script><script src="/socket.io/socket.io.js"></script><script src="/client.js"></script></body></html>`);
+      res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Nexus Chat Preview</title><style>html,body{height:100%;margin:0;background:radial-gradient(circle at 50% 20%,#25331f,#090d08 70%);overflow:hidden}</style></head><body><script>sessionStorage.setItem('nexus_username',${JSON.stringify(previewUsername)});window.__NEXUS_BOOTSTRAP__={serverUrl:location.origin};</script><script src="/optimizer-early.js"></script><script src="/optimizer-core.js"></script><script src="/socket.io/socket.io.js"></script><script src="/client.js"></script></body></html>`);
     });
   }
   app.get('/health', (req, res) => {

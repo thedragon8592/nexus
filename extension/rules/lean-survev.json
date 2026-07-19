@@ -1,0 +1,12 @@
+[
+  {
+    "id": 101,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "initiatorDomains": ["survev.io"],
+      "requestDomains": ["nitropay.com", "ad-delivery.net", "doubleclick.net", "id5-sync.com", "privacymanager.io", "amazon-adsystem.com", "btloader.com", "criteo.com", "crwdcntrl.net", "adsrvr.org", "openxcdn.net", "fastclick.net", "googlesyndication.com", "rlcdn.com", "dns-finder.com", "hadronid.net", "ad.gt"],
+      "resourceTypes": ["script", "image", "xmlhttprequest", "sub_frame", "ping", "other", "media", "stylesheet", "font"]
+    }
+  }
+]

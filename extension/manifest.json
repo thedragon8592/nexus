@@ -1,12 +1,32 @@
 {
   "manifest_version": 3,
   "name": "Nexus Chat",
-  "version": "3.6.1",
+  "version": "3.7.0",
   "description": "Nexus chat, social features and live optimizer for resurviv.biz and survev.io",
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",
     "128": "icon128.png"
+  },
+  "permissions": [
+    "declarativeNetRequest"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "lean_survev",
+        "enabled": false,
+        "path": "rules/lean-survev.json"
+      },
+      {
+        "id": "lean_resurviv",
+        "enabled": false,
+        "path": "rules/lean-resurviv.json"
+      }
+    ]
   },
   "content_scripts": [
     {
@@ -17,6 +37,21 @@
         "*://*.survev.io/*"
       ],
       "js": [
+        "optimizer-early.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "*://resurviv.biz/*",
+        "*://*.resurviv.biz/*",
+        "*://survev.io/*",
+        "*://*.survev.io/*"
+      ],
+      "js": [
+        "optimizer-core.js",
         "socket.io.min.js",
         "nexus-chat.js"
       ],

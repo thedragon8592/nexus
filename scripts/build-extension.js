@@ -2,7 +2,12 @@ const fs = require('fs');
 const path = require('path');
 
 const projectRoot = path.resolve(__dirname, '..');
-const source = path.join(projectRoot, 'public', 'client.js');
+const generatedFiles = [
+  [path.join(projectRoot, 'public', 'client.js'), 'nexus-chat.js'],
+  [path.join(projectRoot, 'public', 'optimizer-core.js'), 'optimizer-core.js'],
+  [path.join(projectRoot, 'public', 'optimizer-early.js'), 'optimizer-early.js'],
+  [path.join(projectRoot, 'extension', 'background.js'), 'background.js'],
+];
 const packageVersion = require(path.join(projectRoot, 'package.json')).version;
 const canonicalManifest = JSON.parse(fs.readFileSync(path.join(projectRoot, 'extension', 'manifest.json'), 'utf8'));
 const extensionDirectories = [
@@ -15,7 +20,13 @@ const extensionDirectories = [
 let generated = 0;
 for (const directory of extensionDirectories) {
   if (!fs.existsSync(directory)) continue;
-  fs.copyFileSync(source, path.join(directory, 'nexus-chat.js'));
+  generatedFiles.forEach(([source, target]) => {
+    const destination = path.join(directory, target);
+    if (path.resolve(source) !== path.resolve(destination)) fs.copyFileSync(source, destination);
+  });
+  if (path.resolve(directory) !== path.resolve(projectRoot, 'extension')) {
+    fs.cpSync(path.join(projectRoot, 'extension', 'rules'), path.join(directory, 'rules'), { recursive: true });
+  }
   const manifestPath = path.join(directory, 'manifest.json');
   if (fs.existsSync(manifestPath)) {
     const manifest = { ...canonicalManifest };

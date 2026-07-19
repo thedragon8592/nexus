@@ -1,16 +1,18 @@
 {
-  "version": "3.6.1",
+  "version": "3.7.0",
   "extensionUrl": "https://github.com/thedragon8592/nexus/releases/latest",
   "userscriptUrl": "https://greasyfork.org/es/scripts/584741-nexus-chat",
   "changes": [
-    "Update checks now use GitHub first with Render as an automatic fallback",
-    "The update notice follows the active Nexus color theme",
-    "A persistent UP badge reopens an available release after dismissal",
-    "Update checks repeat while the game stays open and when the tab becomes active"
+    "Integrated the complete Nexus 75 optimizer engine into Nexus Chat Performance settings",
+    "Added Quality, Balanced, Performance, Competitive, Extreme, Original, and Custom modes",
+    "Added per-feature Custom controls, lobby calibration, FPS, 1% low, p95, long-task, input-to-frame, and passive RTT diagnostics",
+    "Added 1x HiDPI rendering, light textures, smart region leases, sleeping lobby work, and optional third-party filtering",
+    "Client-side player rotation remains enabled in every mode"
   ],
   "bugs": [
-    "Removed the single Render version endpoint as a point of failure",
-    "Prevented an old ZIP from missing releases when the game stays open",
-    "Replaced the legacy release overlay styling with the current Nexus interface"
+    "Removed the previous Nexus Chat optimizer presets and the separate Nexus Optimizer floating menu",
+    "Disabled client-side interpolation in performance-oriented modes because it adds per-player work every frame",
+    "Kept interpolation available in Quality and Custom for players who prefer smoother movement",
+    "Restricted network filtering to observed advertising and analytics domains in the browser extension"
   ]
 }
