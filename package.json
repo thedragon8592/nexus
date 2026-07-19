@@ -1,6 +1,6 @@
 {
   "name": "nexus-chat-server",
-  "version": "3.6.0",
+  "version": "3.6.1",
   "description": "Real-time social chat and live performance tools for Survev and Resurviv.",
   "license": "MIT",
   "private": true,

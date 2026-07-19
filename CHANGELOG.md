@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.6.1 - Reliable themed update notices
+
+- Check GitHub's release manifest first and fall back to Render when needed.
+- Recheck for updates every ten minutes and whenever the game tab becomes active.
+- Keep an UP badge in the Nexus header so a dismissed update can be reopened.
+- Redesign the update notice to inherit the user's active Nexus theme.
+- Direct extension updates to the verified GitHub release and Tampermonkey updates to Greasy Fork.
+
 ## 3.6.0 - Runtime and social polish
 
 - Unlock Web Audio only after a real user gesture, preventing repeated autoplay warnings.

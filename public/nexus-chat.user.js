@@ -2,7 +2,7 @@
 // @name         Nexus Chat
 // @namespace    https://nexus-chat-free.onrender.com/
 // @icon         https://i.ibb.co/FkXVWJnC/Chat-GPT-Image-26-jun-2026-19-06-21.png
-// @version      3.6.0
+// @version      3.6.1
 // @description  Nexus chat, social features and live performance optimizer for Resurviv and Survev.
 // @author       ! System
 // @license      MIT
@@ -25,7 +25,7 @@
     window.__nexusTampermonkeyLoader = true;
 
     const SERVER = 'https://nexus-chat-free.onrender.com';
-    const LOADER_VERSION = '3.6.0';
+    const LOADER_VERSION = '3.6.1';
     const TOKEN_KEY = 'nexus_social_token';
 
     function requestText(url) {

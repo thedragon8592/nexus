@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Nexus Chat",
-  "version": "3.6.0",
+  "version": "3.6.1",
   "description": "Nexus chat, social features and live optimizer for resurviv.biz and survev.io",
   "icons": {
     "16": "icon16.png",
@@ -25,7 +25,8 @@
     }
   ],
   "host_permissions": [
-    "https://nexus-chat-free.onrender.com/*"
+    "https://nexus-chat-free.onrender.com/*",
+    "https://raw.githubusercontent.com/thedragon8592/nexus/*"
   ],
   "web_accessible_resources": [
     {
