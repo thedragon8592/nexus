@@ -4,7 +4,7 @@
     window.__nexusChatLoaded = true;
     window.__nexusIntegratedOptimizer = true;
 
-    const EXT_VERSION = '3.7.0';
+    const EXT_VERSION = '3.8.0';
     const WEBSITE_URL = 'https://wnexuschat.netlify.app';
     const GREASYFORK_URL = 'https://greasyfork.org/es/scripts/584741-nexus-chat';
     const bootstrap = window.__NEXUS_BOOTSTRAP__ || {};
@@ -45,6 +45,17 @@
         localStorage.setItem('nexus_social_token', value);
         window.dispatchEvent(new CustomEvent('NEXUS_SOCIAL_TOKEN', { detail: { token: value } }));
         return true;
+    }
+
+    function getClientSessionId() {
+        const key = 'nexus_client_session';
+        const stored = sessionStorage.getItem(key);
+        if (stored && /^[A-Za-z0-9_-]{16,96}$/.test(stored)) return stored;
+        const generated = typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : Array.from(crypto.getRandomValues(new Uint8Array(18)), (byte) => byte.toString(16).padStart(2, '0')).join('');
+        sessionStorage.setItem(key, generated);
+        return generated;
     }
 
     function createGameLoadingScreen() {
@@ -139,7 +150,6 @@
         discordReminder: false,
         dndMode: false,
         theme: 'dark',
-        emojiEnabled: true,
         glassmorphism: true,
         volume: 0.5,
         performanceMode: 'balanced'
@@ -152,6 +162,10 @@
     const OPTIMIZER_MODE_LABELS = Object.freeze({
         quality: 'Quality', balanced: 'Balanced', performance: 'Performance',
         competitive: 'Competitive', extreme: 'Extreme', original: 'Original', custom: 'Custom'
+    });
+    const OPTIMIZER_MODE_ICONS = Object.freeze({
+        quality: '◇', balanced: '◐', performance: '⚡',
+        competitive: '◎', extreme: '▲', original: '↺', custom: '✦'
     });
     const OPTIMIZER_MODE_DETAILS = Object.freeze({
         quality: 'Native-resolution visuals and smooth interpolation with only safe lobby cleanup.',
@@ -219,6 +233,11 @@
         if (select) select.value = mode;
         const custom = document.getElementById('cfg-performance-custom');
         if (custom) custom.hidden = mode !== 'custom';
+        document.querySelectorAll('[data-optimizer-mode-card]').forEach((button) => {
+            const active = button.dataset.optimizerModeCard === mode;
+            button.classList.toggle('active', active);
+            button.setAttribute('aria-pressed', String(active));
+        });
         document.querySelectorAll('[data-optimizer-setting]').forEach((input) => {
             input.checked = Boolean(draft[input.dataset.optimizerSetting]);
             if (input.dataset.optimizerSetting === 'blockThirdParty') input.disabled = !core?.isNetworkBlockingSupported?.();
@@ -332,6 +351,7 @@
         ? bootstrapToken
         : (isSocialToken(storedSocialToken) ? storedSocialToken : createSocialToken());
     persistSocialToken(socialToken);
+    const clientSessionId = getClientSessionId();
     let isChatOpen = false, isMinimized = false, isIdle = false, isDim = false;
     let idleTimer = null, isInputFocused = false, isHovering = false;
     let sendCooldown = false, mentionCount = 0, unreadCount = 0;
@@ -356,7 +376,13 @@
     let pendingBatchScroll = false;
     let mentionPatternCache = { key: '', pattern: null };
     let historicalProfileRevision = 0;
+    let socialSidebarRenderKey = '';
+    let scrollStateRaf = null;
     let connectionRetryTimer = null;
+    let joinRetryTimer = null;
+    let joinRetryAttempt = 0;
+    let joinReady = false;
+    let sessionSuperseded = false;
     let socketLibraryRetryTimer = null;
     let updateCheckTimer = null;
     let latestUpdateData = null;
@@ -480,6 +506,11 @@
             updateBadges();
             if (chatSocket) chatSocket.disconnect();
             chatSocket = null;
+            joinReady = false;
+            sessionSuperseded = false;
+            if (joinRetryTimer) clearTimeout(joinRetryTimer);
+            joinRetryTimer = null;
+            joinRetryAttempt = 0;
             totalMessagesThisGame = 0; totalMentionsThisGame = 0;
             connectToChat();
             startDiscordReminder();
@@ -516,11 +547,43 @@
 
     setupGameIdDetection();
 
+    function clearJoinRetry(resetAttempt = true) {
+        if (joinRetryTimer) clearTimeout(joinRetryTimer);
+        joinRetryTimer = null;
+        if (resetAttempt) joinRetryAttempt = 0;
+    }
+
+    function scheduleJoinRetry() {
+        if (joinRetryTimer || joinReady || sessionSuperseded || !chatSocket?.connected) return;
+        const delays = [900, 1600, 2800, 4500, 6500];
+        const delay = delays[Math.min(Math.max(joinRetryAttempt - 1, 0), delays.length - 1)];
+        joinRetryTimer = setTimeout(() => {
+            joinRetryTimer = null;
+            emitJoinRequest();
+        }, delay);
+    }
+
+    function emitJoinRequest() {
+        if (joinReady || sessionSuperseded || !chatSocket?.connected || !username) return;
+        const roomId = gameId || 'lobby';
+        joinRetryAttempt += 1;
+        chatSocket.emit('join', { gameId: roomId, username, socialToken, clientSessionId });
+        lastConnectionError = joinRetryAttempt > 1
+            ? `Restoring your Nexus profile automatically (attempt ${joinRetryAttempt})…`
+            : '';
+        refreshSettingsDiagnostics();
+        scheduleJoinRetry();
+    }
+
     function scheduleConnectionRetry(delay = 3000) {
         if (connectionRetryTimer) clearTimeout(connectionRetryTimer);
         connectionRetryTimer = setTimeout(() => {
             connectionRetryTimer = null;
-            if (!username || chatSocket?.connected) return;
+            if (!username || sessionSuperseded) return;
+            if (chatSocket?.connected) {
+                scheduleJoinRetry();
+                return;
+            }
             if (chatSocket) chatSocket.connect();
             else connectToChat();
             scheduleConnectionRetry(Math.min(delay + 1500, 8000));
@@ -528,8 +591,14 @@
     }
 
     function connectToChat() {
-        if (!username) return;
-        if (chatSocket && chatSocket.connected) return;
+        if (!username || sessionSuperseded) return;
+        if (chatSocket && chatSocket.connected) {
+            if (!joinReady) {
+                clearJoinRetry(false);
+                emitJoinRequest();
+            }
+            return;
+        }
         if (chatSocket) {
             chatSocket.connect();
             scheduleConnectionRetry();
@@ -582,22 +651,24 @@
             chatSocket.on('connect', () => {
                 if (connectionRetryTimer) clearTimeout(connectionRetryTimer);
                 connectionRetryTimer = null;
+                clearJoinRetry();
+                joinReady = false;
+                sessionSuperseded = false;
                 lastConnectionError = '';
                 updateConnectionIndicator(true);
-                chatSocket.emit('join', { gameId: roomId, username, socialToken });
+                emitJoinRequest();
                 addSystemMessage('✅ Connected');
                 playSound('open');
                 updateToggleConnectionDot(true);
                 refreshSettingsDiagnostics();
                 const connectedSocket = chatSocket;
                 setTimeout(() => {
-                    if (chatSocket === connectedSocket && chatSocket.connected && !socialProfile) {
-                        lastConnectionError = 'The server responded but Nexus Social Protocol 3 is unavailable. Update the deployment.';
-                        refreshSettingsDiagnostics();
-                    }
+                    if (chatSocket === connectedSocket && chatSocket.connected && !joinReady) emitJoinRequest();
                 }, 5000);
             });
             chatSocket.on('disconnect', () => {
+                clearJoinRetry();
+                joinReady = false;
                 typingUsers.forEach((entry) => { if (entry?.timer) clearTimeout(entry.timer); });
                 typingUsers.clear();
                 updateTypingIndicator();
@@ -607,7 +678,7 @@
                 stopDiscordReminder();
                 updateToggleConnectionDot(false);
                 refreshSettingsDiagnostics();
-                scheduleConnectionRetry();
+                if (!sessionSuperseded) scheduleConnectionRetry();
             });
             chatSocket.on('connect_error', (error) => {
                 lastConnectionError = error && error.message ? error.message : 'Connection failed';
@@ -616,7 +687,21 @@
             });
             chatSocket.on('protocol-error', (payload) => {
                 lastConnectionError = payload && payload.message ? payload.message : 'Protocol error';
-                showError(lastConnectionError);
+                if (payload?.code === 'NAME_TAKEN' && !joinReady) {
+                    lastConnectionError = 'The previous session is closing. Nexus will retry automatically…';
+                    scheduleJoinRetry();
+                } else {
+                    showError(lastConnectionError);
+                }
+                refreshSettingsDiagnostics();
+            });
+            chatSocket.on('session-replaced', () => {
+                sessionSuperseded = true;
+                joinReady = false;
+                clearJoinRetry();
+                if (connectionRetryTimer) clearTimeout(connectionRetryTimer);
+                connectionRetryTimer = null;
+                lastConnectionError = 'This session continued in the latest page reload.';
                 refreshSettingsDiagnostics();
             });
             chatSocket.on('chat-history', (history) => {
@@ -660,6 +745,9 @@
                 }
             });
             chatSocket.on('social-session', (session) => {
+                joinReady = true;
+                clearJoinRetry();
+                lastConnectionError = '';
                 socialServerVersion = session.serverVersion || null;
                 if (session.protocolVersion !== 3) lastConnectionError = 'Incompatible social protocol version.';
                 if (session.token) {
@@ -1047,13 +1135,7 @@
     }
 
     function applyEmoji(text) {
-        if (!config.emojiEnabled) return text;
-        const map = {
-            ':D': '😄', ':P': '😛', ':O': '😮', ':3': '😊', ';)': '😉',
-            ':)': '🙂', ':(': '☹️', ':|': '😐', ':\'(': '😢', ':/': '😕',
-            '<3': '❤️', ':*': '😘', ':S': '😬', '>:)': '😈'
-        };
-        return text.replace(/:D|:P|:O|:3|;\)|:\)|:\(|:\||:\'\(|:\/|<3|:\*|:S|>:\)/g, match => map[match] || match);
+        return text;
     }
 
     function showError(msg) {
@@ -1361,23 +1443,39 @@
         return true;
     }
 
-    function renderSocialSidebar() {
+    function renderSocialSidebar(force = false) {
         const profile = document.getElementById('nx-social-profile');
         const friends = document.getElementById('nx-friend-list');
         const requests = document.getElementById('nx-request-list');
         if (!profile || !friends || !requests) return;
         if (socialProfile) socialProfile = cacheProfile(socialProfile);
+        socialFriends.sort((first, second) => {
+            const firstTime = Number(directConversationMeta.get(first.id)?.lastMessageAt || 0);
+            const secondTime = Number(directConversationMeta.get(second.id)?.lastMessageAt || 0);
+            return secondTime - firstTime || Number(Boolean(second.online)) - Number(Boolean(first.online)) || first.username.localeCompare(second.username);
+        });
+        const nextRenderKey = JSON.stringify({
+            profile: socialProfile && [socialProfile.id, socialProfile.username, socialProfile.friendCode, socialProfile.avatarUrl],
+            requests: socialRequests.map((request) => [request.id, request.from?.id, request.from?.username, request.from?.avatarUrl]),
+            friends: socialFriends.map((friend) => [
+                friend.id, friend.username, friend.avatarUrl, Boolean(friend.online),
+                socialUnread.get(friend.id) || 0,
+                activeChannel === 'direct' && selectedFriend?.id === friend.id,
+            ]),
+            activeChannel,
+            globalUnread: socialUnread.get('global') || 0,
+        });
+        if (!force && nextRenderKey === socialSidebarRenderKey) {
+            updateBadges();
+            return;
+        }
+        socialSidebarRenderKey = nextRenderKey;
         profile.innerHTML = socialProfile
             ? `${avatarMarkup(socialProfile)}<span><strong>${escapeHtml(socialProfile.username)}</strong><button id="nx-copy-code" title="Copy Nexus ID">${escapeHtml(socialProfile.friendCode)}</button></span>`
             : '<span class="nx-social-loading">Connecting Nexus ID…</span>';
         requests.innerHTML = socialRequests.length
             ? socialRequests.map((request) => `<div class="nx-request nx-profile-trigger" data-request-id="${request.id}" data-profile-id="${escapeHtml(request.from.id)}">${avatarMarkup(request.from, 'nx-avatar nx-avatar-small')}<span>${escapeHtml(request.from.username)}</span><button data-action="accept" title="Accept request">✓</button><button data-action="decline" title="Decline request">×</button></div>`).join('')
             : '<span class="nx-empty">No pending requests</span>';
-        socialFriends.sort((first, second) => {
-            const firstTime = Number(directConversationMeta.get(first.id)?.lastMessageAt || 0);
-            const secondTime = Number(directConversationMeta.get(second.id)?.lastMessageAt || 0);
-            return secondTime - firstTime || Number(Boolean(second.online)) - Number(Boolean(first.online)) || first.username.localeCompare(second.username);
-        });
         friends.innerHTML = socialFriends.length
             ? socialFriends.map((friend) => `<div class="nx-friend-row nx-profile-trigger" data-profile-id="${escapeHtml(friend.id)}"><button class="nx-friend ${activeChannel === 'direct' && selectedFriend?.id === friend.id ? 'active' : ''}" data-friend-id="${escapeHtml(friend.id)}">${avatarMarkup(friend, 'nx-avatar nx-avatar-small')}<span class="nx-presence ${friend.online ? 'online' : ''}"></span><span>${escapeHtml(friend.username)}</span>${socialUnread.get(friend.id) ? `<b>${socialUnread.get(friend.id)}</b>` : ''}</button><button class="nx-remove-friend" data-remove-friend="${escapeHtml(friend.id)}" title="Remove friend">×</button></div>`).join('')
             : '<span class="nx-empty">Add someone with their Nexus ID</span>';
@@ -1633,7 +1731,7 @@
         if (scrollAnimationId) cancelAnimationFrame(scrollAnimationId);
         userScrolled = false;
         updateScrollButton();
-        if (isDim || document.hidden) smooth = false;
+        if (isDim || document.hidden || optimizerCore()?.isPlaying?.()) smooth = false;
         if (!smooth) {
             messageArea.scrollTop = messageArea.scrollHeight;
             requestAnimationFrame(() => {
@@ -2100,7 +2198,33 @@
             .nx-optimizer-option:has(input:disabled) { opacity:.5; }
             .nx-optimizer-actions { display:flex; gap:8px; align-items:center; margin-top:10px; }
             .nx-optimizer-actions .nx-settings-note { margin-right:auto; }
+            .nx-performance-page { --nx-perf-glow:color-mix(in srgb,var(--nx-accent) 22%,transparent); }
+            .nx-performance-page .nx-settings-page-title { font-size:20px; letter-spacing:-.025em; }
+            .nx-performance-page > .nx-settings-page-copy { max-width:560px; }
+            .nx-performance-page .nx-settings-section { padding:0; overflow:hidden; background:linear-gradient(145deg,color-mix(in srgb,var(--nx-bg) 90%,var(--nx-accent) 10%),var(--nx-bg)); }
+            .nx-performance-hero { position:relative; padding:16px !important; background:radial-gradient(circle at 100% 0,var(--nx-perf-glow),transparent 48%); border-bottom:1px solid var(--nx-glass-border); }
+            .nx-performance-hero::before { content:'⚡'; width:38px; height:38px; flex:0 0 38px; display:grid; place-items:center; border-radius:12px; color:#171a10; background:linear-gradient(135deg,var(--nx-accent),var(--nx-accent-2)); font-size:17px; box-shadow:0 10px 28px var(--nx-perf-glow); }
+            .nx-performance-hero h4 { margin:0 0 4px !important; color:var(--nx-text) !important; font-size:13px !important; letter-spacing:.01em !important; text-transform:none !important; }
+            .nx-performance-hero #cfg-apply-performance { margin-left:auto; min-width:112px; box-shadow:0 10px 24px var(--nx-perf-glow); }
+            .nx-performance-mode-label { display:block !important; margin:14px 14px 8px !important; color:var(--nx-text) !important; }
+            .nx-performance-mode-label select { height:38px; font-weight:750; }
+            .nx-optimizer-mode-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; padding:0 14px 14px; }
+            .nx-optimizer-mode-card { min-width:0; padding:9px 8px !important; display:grid !important; grid-template-columns:24px minmax(0,1fr); align-items:center; gap:6px; color:var(--nx-text-secondary) !important; background:rgba(255,255,255,.025) !important; border:1px solid var(--nx-glass-border) !important; text-align:left; box-shadow:none !important; transform:none !important; }
+            .nx-optimizer-mode-card i { width:24px; height:24px; display:grid; place-items:center; border-radius:8px; background:rgba(255,255,255,.055); color:var(--nx-text); font-style:normal; }
+            .nx-optimizer-mode-card span { min-width:0; overflow-wrap:anywhere; font-size:9.5px; font-weight:750; line-height:1.15; }
+            .nx-optimizer-mode-card.active { color:var(--nx-text) !important; border-color:color-mix(in srgb,var(--nx-accent) 68%,transparent) !important; background:color-mix(in srgb,var(--nx-accent) 12%,transparent) !important; box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--nx-accent) 18%,transparent) !important; }
+            .nx-performance-section-label { display:flex; align-items:center; gap:8px; margin:0; padding:13px 14px 0; color:var(--nx-text); font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.1em; }
+            .nx-performance-section-label::after { content:''; height:1px; flex:1; background:var(--nx-glass-border); }
+            .nx-performance-page .nx-optimizer-metrics { margin:9px 14px 14px; grid-template-columns:repeat(2,minmax(0,1fr)); }
+            .nx-performance-page .nx-performance-features { margin:9px 14px 14px; grid-template-columns:repeat(2,minmax(0,1fr)); }
+            .nx-performance-page .nx-status-card { min-height:49px; background:rgba(255,255,255,.03); }
+            .nx-performance-page .nx-status-card strong { color:var(--nx-text); font-size:12px; }
+            .nx-performance-custom { margin:0 14px 14px; padding:12px; border:1px solid var(--nx-glass-border); border-radius:13px; background:rgba(0,0,0,.09); }
+            .nx-performance-custom h4 { margin:0 0 8px !important; }
+            .nx-performance-page .nx-optimizer-actions { margin:0; padding:12px 14px; border-top:1px solid var(--nx-glass-border); background:rgba(0,0,0,.08); }
+            .nx-performance-page .nx-optimizer-actions + .nx-settings-note { display:block; padding:0 14px 14px; }
             @media (max-width:700px) { .nx-optimizer-options { grid-template-columns:1fr; } .nx-optimizer-metrics { grid-template-columns:repeat(2,1fr); } }
+            @media (max-width:700px) { .nx-optimizer-mode-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .nx-performance-page .nx-performance-features { grid-template-columns:repeat(2,minmax(0,1fr)); } }
             .nx-theme-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
             .nx-theme-card { position:relative; display:grid !important; grid-template-columns:46px 1fr; align-items:center; gap:9px; padding:9px !important; color:var(--nx-text) !important; background:rgba(255,255,255,.03) !important; border:1px solid var(--nx-glass-border) !important; text-align:left; }
             .nx-theme-card.active { border-color:var(--nx-accent) !important; box-shadow:0 0 0 2px color-mix(in srgb,var(--nx-accent) 11%,transparent); }
@@ -2185,9 +2309,13 @@
         document.body.appendChild(toggleIcon);
 
         messageArea.addEventListener('scroll', () => {
-            userScrolled = !isAtBottom();
-            updateScrollButton();
-        });
+            if (scrollStateRaf) return;
+            scrollStateRaf = requestAnimationFrame(() => {
+                scrollStateRaf = null;
+                userScrolled = !isAtBottom();
+                updateScrollButton();
+            });
+        }, { passive: true });
         scrollToBottomBtn.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -2242,7 +2370,7 @@
             if (event.target.closest('#nx-copy-code') && socialProfile) {
                 copyText(socialProfile.friendCode);
                 event.target.closest('#nx-copy-code').textContent = 'Copied';
-                setTimeout(renderSocialSidebar, 1200);
+                setTimeout(() => renderSocialSidebar(true), 1200);
             }
         });
         document.getElementById('nx-mention-badge').addEventListener('click', () => { mentionCount = 0; updateBadges(); scrollToBottom(false); });
@@ -2624,6 +2752,31 @@
 
         const optimizerMetricsGrid = settingsPanel.querySelector('.nx-optimizer-metrics');
         optimizerMetricsGrid?.insertAdjacentHTML('beforeend', '<div class="nx-status-card"><span>Input→frame p95</span><strong id="cfg-opt-input">—</strong></div><div class="nx-status-card"><span>Estimated RTT</span><strong id="cfg-opt-rtt">—</strong></div>');
+        const performancePage = settingsPanel.querySelector('[data-page="performance"]');
+        performancePage?.classList.add('nx-performance-page');
+        const performanceSection = performancePage?.querySelector('.nx-settings-section');
+        const performanceHero = performanceSection?.querySelector('.nx-account-card');
+        performanceHero?.classList.add('nx-performance-hero');
+        const performanceSelectElement = performanceSection?.querySelector('#cfg-performance');
+        const performanceModeLabel = performanceSelectElement?.closest('label');
+        performanceModeLabel?.classList.add('nx-performance-mode-label');
+        performanceModeLabel?.insertAdjacentHTML('afterend', `
+            <div class="nx-optimizer-mode-grid" aria-label="Performance modes">
+                ${Object.entries(OPTIMIZER_MODE_LABELS).map(([mode, label]) => `
+                    <button type="button" class="nx-optimizer-mode-card" data-optimizer-mode-card="${mode}" aria-pressed="false">
+                        <i aria-hidden="true">${OPTIMIZER_MODE_ICONS[mode] || '◇'}</i>
+                        <span>${label}</span>
+                    </button>
+                `).join('')}
+            </div>
+        `);
+        optimizerMetricsGrid?.insertAdjacentHTML('beforebegin', '<h4 class="nx-performance-section-label">Live diagnostics</h4>');
+        const performanceStatusGrids = performanceSection ? [...performanceSection.querySelectorAll('.nx-status-grid')] : [];
+        const performanceFeaturesGrid = performanceStatusGrids.find((grid) => !grid.classList.contains('nx-optimizer-metrics'));
+        performanceFeaturesGrid?.classList.add('nx-performance-features');
+        performanceFeaturesGrid?.insertAdjacentHTML('beforebegin', '<h4 class="nx-performance-section-label">Applied game profile</h4>');
+        const performanceCustom = performanceSection?.querySelector('#cfg-performance-custom');
+        performanceCustom?.classList.add('nx-performance-custom');
         const displayNameInput = document.getElementById('cfg-name');
         const displayNameLabel = displayNameInput?.closest('label');
         if (displayNameLabel) {
@@ -2676,7 +2829,8 @@
             if (!isSocialToken(nextToken)) { input.setCustomValidity('This Nexus recovery key is invalid.'); input.reportValidity(); return; }
             input.setCustomValidity(''); socialToken = nextToken; persistSocialToken(socialToken); input.value = '';
             if (chatSocket) chatSocket.disconnect();
-            chatSocket = null; connectToChat(); addSystemMessage('Nexus account restored. Reconnecting…');
+            chatSocket = null; joinReady = false; sessionSuperseded = false; clearJoinRetry();
+            connectToChat(); addSystemMessage('Nexus account restored. Reconnecting…');
         });
         document.getElementById('cfg-authorcolor').addEventListener('input', function() { authorColor = this.value; localStorage.setItem('nexus_authorColor', authorColor); });
         document.getElementById('cfg-size').addEventListener('change', function() { config.size = this.value; applySize(); saveConfig(); });
@@ -2702,15 +2856,22 @@
             playSound('toggle');
         }));
         const performanceSelect = document.getElementById('cfg-performance');
-        performanceSelect.addEventListener('change', function() {
+        const selectPerformanceDraft = (mode) => {
             const core = optimizerCore();
-            config.performanceMode = this.value;
-            optimizerDraft = this.value === 'custom'
+            config.performanceMode = mode;
+            optimizerDraft = mode === 'custom'
                 ? { ...currentOptimizerDraft(), preset: 'custom' }
-                : core?.settingsForPreset?.(this.value, currentOptimizerDraft());
+                : (core?.settingsForPreset?.(mode, currentOptimizerDraft()) || { ...currentOptimizerDraft(), preset: mode });
+            performanceSelect.value = mode;
             refreshPerformanceDetails();
             playSound('toggle');
+        };
+        performanceSelect.addEventListener('change', function() {
+            selectPerformanceDraft(this.value);
         });
+        document.querySelectorAll('[data-optimizer-mode-card]').forEach((button) => button.addEventListener('click', () => {
+            selectPerformanceDraft(button.dataset.optimizerModeCard);
+        }));
         document.querySelectorAll('[data-optimizer-setting]').forEach((input) => input.addEventListener('change', function() {
             optimizerDraft = { ...currentOptimizerDraft(), preset: 'custom', [this.dataset.optimizerSetting]: this.checked };
             config.performanceMode = 'custom';
@@ -2762,7 +2923,8 @@
         document.getElementById('cfg-reconnect').addEventListener('click', function() {
             lastConnectionError = '';
             if (chatSocket) chatSocket.disconnect();
-            chatSocket = null; socialProfile = null; socialServerVersion = null; refreshSettingsIdentity(); connectToChat();
+            chatSocket = null; joinReady = false; sessionSuperseded = false; clearJoinRetry();
+            socialProfile = null; socialServerVersion = null; refreshSettingsIdentity(); connectToChat();
             this.textContent = 'Reconnecting…'; setTimeout(() => { this.textContent = 'Reconnect now'; refreshSettingsDiagnostics(); }, 1200);
         });
         refreshSettingsIdentity();
@@ -2786,13 +2948,16 @@
         const detail = document.getElementById('cfg-status-detail');
         if (!server || !identity || !detail) return;
         const connected = Boolean(chatSocket && chatSocket.connected);
+        const ready = Boolean(connected && joinReady && socialProfile?.friendCode);
         server.textContent = connected ? `Connected${socialServerVersion ? ` · v${socialServerVersion}` : ''}` : 'Disconnected';
         server.className = connected ? 'nx-status-ok' : 'nx-status-error';
-        identity.textContent = socialProfile && socialProfile.friendCode ? 'Ready' : 'Pending';
-        identity.className = socialProfile && socialProfile.friendCode ? 'nx-status-ok' : 'nx-status-warn';
+        identity.textContent = ready ? 'Ready' : (connected ? 'Restoring…' : 'Pending');
+        identity.className = ready ? 'nx-status-ok' : 'nx-status-warn';
         detail.textContent = lastConnectionError
             ? `Last error: ${lastConnectionError}`
-            : (connected ? `Socket connected to ${SERVER_URL}. Global chat is available.` : `Connecting to ${SERVER_URL}…`);
+            : (ready
+                ? `Profile verified on ${SERVER_URL}. Global chat is available.`
+                : (connected ? 'Socket connected. Restoring the real Nexus profile automatically…' : `Connecting to ${SERVER_URL}…`));
     }
 
     function applyTheme(theme) { AVAILABLE_THEMES.forEach((name) => chatContainer.classList.remove('theme-' + name)); chatContainer.classList.add('theme-' + (AVAILABLE_THEMES.includes(theme) ? theme : 'dark')); }
@@ -2835,7 +3000,9 @@
     });
     window.addEventListener('pagehide', () => {
         if (historySaveTimer) clearTimeout(historySaveTimer);
+        if (scrollStateRaf) cancelAnimationFrame(scrollStateRaf);
         if (connectionRetryTimer) clearTimeout(connectionRetryTimer);
+        if (joinRetryTimer) clearTimeout(joinRetryTimer);
         if (socketLibraryRetryTimer) clearTimeout(socketLibraryRetryTimer);
         if (updateCheckTimer) clearInterval(updateCheckTimer);
         if (killLeaderSearchTimer) clearTimeout(killLeaderSearchTimer);
