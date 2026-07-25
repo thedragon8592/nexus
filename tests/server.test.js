@@ -43,11 +43,11 @@ async function createConnectedClient(url) {
   return socket;
 }
 
-async function join(socket, gameId, username) {
+async function join(socket, gameId, username, extras = {}) {
   const accepted = nextEvent(socket, 'join-accepted');
   const history = nextEvent(socket, 'chat-history');
   const social = nextEvent(socket, 'social-session');
-  socket.emit('join', { gameId, username });
+  socket.emit('join', { gameId, username, ...extras });
   const [[joinData], [messages], [socialSession]] = await Promise.all([accepted, history, social]);
   return { joinData, messages, socialSession };
 }
@@ -139,6 +139,43 @@ test('duplicate names and malformed events are rejected without stopping the ser
   assert.equal(health.onlineUsers, 1);
 });
 
+test('a refreshed tab replaces its stale session without allowing name theft', async (t) => {
+  const nexus = createNexusServer({ dataFile: null });
+  const port = await nexus.start(0);
+  const url = `http://127.0.0.1:${port}`;
+  const clients = [];
+  t.after(async () => {
+    clients.forEach((socket) => socket.disconnect());
+    await nexus.stop();
+  });
+
+  const original = await createConnectedClient(url);
+  const refreshed = await createConnectedClient(url);
+  const impostor = await createConnectedClient(url);
+  clients.push(original, refreshed, impostor);
+  const clientSessionId = 'stable-browser-session-123456';
+  const firstJoin = await join(original, 'refresh-game', 'Alice', { clientSessionId });
+
+  const originalDisconnected = nextEvent(original, 'disconnect');
+  const replacementJoin = join(refreshed, 'refresh-game', 'Alice', {
+    clientSessionId,
+    socialToken: firstJoin.socialSession.token,
+  });
+  await originalDisconnected;
+  const replacement = await replacementJoin;
+
+  assert.equal(replacement.socialSession.profile.friendCode, firstJoin.socialSession.profile.friendCode);
+  assert.equal(nexus.state.rooms.get('refresh-game').size, 1);
+
+  const impostorError = nextEvent(impostor, 'protocol-error');
+  impostor.emit('join', {
+    gameId: 'refresh-game',
+    username: ' Alice ',
+    clientSessionId: 'different-browser-session-987654',
+  });
+  assert.equal((await impostorError)[0].code, 'NAME_TAKEN');
+});
+
 test('ephemeral room data is removed after the final disconnect', async (t) => {
   const nexus = createNexusServer({ dataFile: null });
   const port = await nexus.start(0);
@@ -175,7 +212,7 @@ test('social accounts support global chat, friend requests and direct messages',
   const bobJoin = await join(bob, 'social-game', 'Bob');
 
   assert.equal(aliceJoin.socialSession.protocolVersion, 3);
-  assert.equal(aliceJoin.socialSession.serverVersion, '3.7.0');
+  assert.equal(aliceJoin.socialSession.serverVersion, '3.8.0');
   assert.match(aliceJoin.socialSession.profile.friendCode, /^NX-[0-9A-F]{8}$/);
   assert.ok(aliceJoin.socialSession.token);
 
@@ -377,7 +414,7 @@ test('versioned public assets are served without stale caching', async (t) => {
   assert.equal(healthResponse.headers.get('x-frame-options'), 'DENY');
   assert.match(healthResponse.headers.get('permissions-policy'), /camera=\(\)/);
   const health = await healthResponse.json();
-  assert.equal(health.version, '3.7.0');
+  assert.equal(health.version, '3.8.0');
 
   for (const path of ['/client.js', '/optimizer-early.js', '/optimizer-core.js', '/nexus-chat.user.js', '/nexus-optimizer.user.js']) {
     const response = await fetch(`${url}${path}`);
@@ -387,7 +424,7 @@ test('versioned public assets are served without stale caching', async (t) => {
   }
 
   const client = await fetch(`${url}/client.js`).then((response) => response.text());
-  assert.match(client, /const EXT_VERSION = '3\.7\.0'/);
+  assert.match(client, /const EXT_VERSION = '3\.8\.0'/);
   assert.match(client, /raw\.githubusercontent\.com\/thedragon8592\/nexus\/main\/public\/version\.json/);
   assert.match(client, /setInterval\(checkForUpdate, UPDATE_CHECK_INTERVAL_MS\)/);
   assert.match(client, /nx-update-ready/);
@@ -414,6 +451,10 @@ test('versioned public assets are served without stale caching', async (t) => {
   assert.match(client, /function unlockAudio/);
   assert.match(client, /sharedAudioContext\.state !== 'running'/);
   assert.match(client, /reconnectionAttempts: Infinity/);
+  assert.match(client, /clientSessionId/);
+  assert.match(client, /function emitJoinRequest/);
+  assert.match(client, /session-replaced/);
+  assert.match(client, /joinReady/);
   assert.match(client, /MESSAGE_COOLDOWN_MS = 2000/);
   assert.match(client, /function attachKillLeaderObserver/);
   assert.match(client, /FIRE_GIF_URL/);
@@ -421,6 +462,8 @@ test('versioned public assets are served without stale caching', async (t) => {
   assert.match(client, /250 words/);
   assert.match(client, /OPTIMIZER_MODE_LABELS/);
   assert.match(client, /data-optimizer-setting/);
+  assert.match(client, /data-optimizer-mode-card/);
+  assert.match(client, /nx-performance-hero/);
   assert.match(client, /Input→frame p95/);
   assert.doesNotMatch(client, /PERFORMANCE_PROFILES/);
   assert.doesNotMatch(client, /data-nexus-performance/);
@@ -442,10 +485,12 @@ test('versioned public assets are served without stale caching', async (t) => {
   assert.match(client, /split\(\/\\s\+\/\).*join\('\\\\s\+'\)/);
   assert.match(client, /mention: \[\[620/);
   assert.match(client, /playSound\('navigate'\)/);
+  assert.match(client, /function applyEmoji\(text\) \{\s*return text;/);
+  assert.doesNotMatch(client, /emojiEnabled/);
   assert.doesNotMatch(client, /Configuración de Nexus/);
 
   const userscript = await fetch(`${url}/nexus-chat.user.js`).then((response) => response.text());
-  assert.match(userscript, /@version\s+3\.7\.0/);
+  assert.match(userscript, /@version\s+3\.8\.0/);
   assert.match(userscript, /clientType: 'userscript'/);
   assert.match(userscript, /installedVersion: LOADER_VERSION/);
   assert.match(userscript, /live performance optimizer/);
@@ -484,7 +529,7 @@ test('the packaged browser extension is synchronized with the web client', () =>
   assert.equal(extensionClient, client);
   assert.equal(extensionOptimizerCore, optimizerCore);
   assert.equal(extensionOptimizerEarly, optimizerEarly);
-  assert.equal(manifest.version, '3.7.0');
+  assert.equal(manifest.version, '3.8.0');
   assert.deepEqual(manifest.host_permissions, [
     'https://nexus-chat-free.onrender.com/*',
     'https://raw.githubusercontent.com/thedragon8592/nexus/*',

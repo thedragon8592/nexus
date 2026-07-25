@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.8.0 - Automatic session recovery
+
+- Replaced stale sockets automatically when the same game tab reloads while keeping duplicate-name protection for other users.
+- Added profile-level join retries so Diagnostics no longer needs repeated manual reconnects.
+- Kept the same Nexus identity during refreshes and optimizer-triggered reloads.
+- Removed automatic text-emoticon conversion while preserving explicit emoji reactions.
+- Redesigned Performance settings with clear mode cards, grouped live metrics, and a cleaner custom profile.
+- Reduced unnecessary friend-list rebuilds, scroll work, and in-match smooth-scroll animation.
+
 ## 3.7.0 - Integrated Nexus 75 optimizer
 
 - Replaced the old Nexus Chat performance presets with the Nexus 75 optimization engine.

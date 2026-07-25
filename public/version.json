@@ -1,18 +1,18 @@
 {
-  "version": "3.7.0",
+  "version": "3.8.0",
   "extensionUrl": "https://github.com/thedragon8592/nexus/releases/latest",
   "userscriptUrl": "https://greasyfork.org/es/scripts/584741-nexus-chat",
   "changes": [
-    "Integrated the complete Nexus 75 optimizer engine into Nexus Chat Performance settings",
-    "Added Quality, Balanced, Performance, Competitive, Extreme, Original, and Custom modes",
-    "Added per-feature Custom controls, lobby calibration, FPS, 1% low, p95, long-task, input-to-frame, and passive RTT diagnostics",
-    "Added 1x HiDPI rendering, light textures, smart region leases, sleeping lobby work, and optional third-party filtering",
-    "Client-side player rotation remains enabled in every mode"
+    "Automatic profile recovery now replaces a stale socket after refresh or optimizer reload",
+    "Diagnostics retries the profile join automatically instead of requiring repeated Reconnect clicks",
+    "Performance settings now use clearer mode cards, grouped metrics, and a cleaner Custom layout",
+    "Friend navigation and scroll updates do less repeated DOM work",
+    "Client-side player rotation remains enabled in every performance mode"
   ],
   "bugs": [
-    "Removed the previous Nexus Chat optimizer presets and the separate Nexus Optimizer floating menu",
-    "Disabled client-side interpolation in performance-oriented modes because it adds per-player work every frame",
-    "Kept interpolation available in Quality and Custom for players who prefer smoother movement",
-    "Restricted network filtering to observed advertising and analytics domains in the browser extension"
+    "Protected names from other users while allowing the same browser tab to reclaim its own session",
+    "Fixed the connected-but-profile-pending state that stopped automatic reconnection",
+    "Removed automatic emoticon replacement for text such as :/",
+    "Reduced in-match smooth scrolling and unnecessary friend-list rerenders"
   ]
 }

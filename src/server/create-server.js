@@ -229,14 +229,14 @@ function createNexusServer(options = {}) {
       roomReactions.delete(gameId);
     }
 
-    function leaveCurrentRoom(announce = true) {
+    function leaveCurrentRoom(announce = true, preserveEmptyRoom = false) {
       if (!currentGame) return;
       const gameId = currentGame;
       const username = currentUsername;
       socket.leave(gameId);
       const room = rooms.get(gameId);
       if (room) room.delete(socket.id);
-      cleanRoomIfEmpty(gameId);
+      if (!preserveEmptyRoom) cleanRoomIfEmpty(gameId);
       if (rooms.has(gameId)) {
         if (announce) socket.to(gameId).emit('system-message', `${username} left the chat.`);
         io.to(gameId).emit('user-list', getUserList(gameId));
@@ -259,13 +259,29 @@ function createNexusServer(options = {}) {
       }
       const gameId = parsedGame.value;
       const username = parsedName.value;
+      const clientSessionId = typeof payload.clientSessionId === 'string'
+        && /^[A-Za-z0-9_-]{16,96}$/.test(payload.clientSessionId)
+        ? payload.clientSessionId
+        : null;
       const room = rooms.get(gameId) || new Map();
-      const duplicate = Array.from(room.entries()).some(
+      const duplicate = Array.from(room.entries()).find(
         ([id, user]) => id !== socket.id && normalizeName(user.username) === normalizeName(username),
       );
       if (duplicate) {
-        protocolError('NAME_TAKEN', 'That name is already taken in this game.');
-        return;
+        const [duplicateSocketId, duplicateUser] = duplicate;
+        if (clientSessionId && duplicateUser.clientSessionId === clientSessionId) {
+          const previousSocket = io.sockets.sockets.get(duplicateSocketId);
+          if (previousSocket) {
+            previousSocket.data.nexusSessionReplaced = true;
+            previousSocket.emit('session-replaced');
+            previousSocket.disconnect(true);
+          } else {
+            room.delete(duplicateSocketId);
+          }
+        } else {
+          protocolError('NAME_TAKEN', 'That name is already taken in this game.');
+          return;
+        }
       }
 
       if (currentGame) leaveCurrentRoom();
@@ -273,7 +289,7 @@ function createNexusServer(options = {}) {
       currentGame = gameId;
       currentUsername = username;
       if (!rooms.has(gameId)) rooms.set(gameId, new Map());
-      rooms.get(gameId).set(socket.id, { username, socketId: socket.id });
+      rooms.get(gameId).set(socket.id, { username, socketId: socket.id, clientSessionId });
       if (!roomHistory.has(gameId)) roomHistory.set(gameId, []);
       if (!roomPolls.has(gameId)) roomPolls.set(gameId, new Map());
       if (!roomPinned.has(gameId)) roomPinned.set(gameId, null);
@@ -297,6 +313,7 @@ function createNexusServer(options = {}) {
         username,
         socketId: socket.id,
         accountId: currentAccountId,
+        clientSessionId,
         profile,
       });
       socket.emit('social-session', {
@@ -796,7 +813,8 @@ function createNexusServer(options = {}) {
     });
 
     socket.on('disconnect', () => {
-      leaveCurrentRoom();
+      const replaced = Boolean(socket.data.nexusSessionReplaced);
+      leaveCurrentRoom(!replaced, replaced);
       if (currentAccountId) {
         const sockets = onlineAccounts.get(currentAccountId);
         if (sockets) {
